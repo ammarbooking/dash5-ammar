@@ -133,6 +133,26 @@ const db = {
     return () => {
       supabaseClient.removeChannel(channel);
     };
+  },
+
+  onCustomersSnapshot(callback) {
+    if (!supabaseClient) return () => {};
+
+    const channel = supabaseClient
+      .channel("customers-realtime")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "customers" },
+        async () => {
+          const rows = await db.getAll("customers", "created_at", "desc");
+          callback(rows || []);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabaseClient.removeChannel(channel);
+    };
   }
 };
 
@@ -381,6 +401,10 @@ function App() {
     db.onBookingsSnapshot((rows) => {
       if (rows.length) setBookings(rows);
       else setBookings([]);
+    });
+
+    db.onCustomersSnapshot((rows) => {
+      setCustomersDb(rows || []);
     });
   };
 
