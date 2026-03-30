@@ -10,9 +10,8 @@
 <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@300;400;500;700;800;900&display=swap" rel="stylesheet"/>
 <style>body{margin:0;padding:0;background:#0b0b18;font-family:'Tajawal',sans-serif;}</style>
 
-<!-- Firebase SDK -->
-<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+<!-- Supabase SDK -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 
 <!-- React -->
 <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
@@ -27,55 +26,113 @@
 const { useState, useEffect, useCallback, useRef } = React;
 
 // ═══════════════════════════════════════════
-// Firebase Helper
+// Supabase Helper
 // ═══════════════════════════════════════════
-let firebaseApp = null;
-let firestoreDb = null;
+let supabaseClient = null;
 
-function initFirebase(config) {
+function initSupabase(url, anonKey) {
   try {
-    firebaseApp = firebase.initializeApp(config);
-    firestoreDb = firebase.firestore();
+    supabaseClient = window.supabase.createClient(url, anonKey);
     return true;
   } catch (e) {
-    console.error("Firebase init error:", e);
+    console.error("Supabase init error:", e);
     return false;
   }
 }
 
-const fb = {
-  async getAll(collection, orderBy = "created_at", dir = "desc") {
-    if (!firestoreDb) return [];
+const db = {
+  async getAll(table, orderBy = "created_at", dir = "desc") {
+    if (!supabaseClient) return [];
     try {
-      const snap = await firestoreDb.collection(collection).orderBy(orderBy, dir).get();
-      return snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    } catch (e) { console.error("FB get:", e); return []; }
+      const { data, error } = await supabaseClient
+        .from(table)
+        .select("*")
+        .order(orderBy, { ascending: dir !== "desc" });
+
+      if (error) throw error;
+      return data || [];
+    } catch (e) {
+      console.error("DB get:", e);
+      return [];
+    }
   },
-  async add(collection, data) {
-    if (!firestoreDb) return null;
+
+  async add(table, payload) {
+    if (!supabaseClient) return null;
     try {
-      const ref = await firestoreDb.collection(collection).add({ ...data, created_at: firebase.firestore.FieldValue.serverTimestamp() });
-      return { id: ref.id, ...data };
-    } catch (e) { console.error("FB add:", e); return null; }
+      const row = { ...payload };
+      if (!row.created_at) row.created_at = new Date().toISOString();
+
+      const { data, error } = await supabaseClient
+        .from(table)
+        .insert([row])
+        .select()
+        .single();
+
+      if (error) throw error;
+      return data;
+    } catch (e) {
+      console.error("DB add:", e);
+      return null;
+    }
   },
-  async update(collection, id, data) {
-    if (!firestoreDb) return false;
-    try { await firestoreDb.collection(collection).doc(id).update(data); return true; }
-    catch (e) { console.error("FB update:", e); return false; }
-  },
-  async upsertCustomer(phone, data) {
-    if (!firestoreDb) return;
+
+  async update(table, id, payload) {
+    if (!supabaseClient) return false;
     try {
-      const snap = await firestoreDb.collection("customers").where("phone", "==", phone).get();
-      if (snap.empty) await firestoreDb.collection("customers").add({ ...data, created_at: firebase.firestore.FieldValue.serverTimestamp() });
-      else await snap.docs[0].ref.update(data);
-    } catch (e) { console.error("FB upsert:", e); }
+      const { error } = await supabaseClient
+        .from(table)
+        .update(payload)
+        .eq("id", id);
+
+      if (error) throw error;
+      return true;
+    } catch (e) {
+      console.error("DB update:", e);
+      return false;
+    }
   },
-  onSnapshot(collection, callback, orderBy = "created_at", dir = "desc") {
-    if (!firestoreDb) return () => {};
-    return firestoreDb.collection(collection).orderBy(orderBy, dir).onSnapshot(snap => {
-      callback(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    });
+
+  async upsertCustomer(phone, payload) {
+    if (!supabaseClient) return false;
+    try {
+      const row = { phone, ...payload };
+      if (!row.updated_at) row.updated_at = new Date().toISOString();
+
+      const { error } = await supabaseClient
+        .from("customers")
+        .upsert([row], { onConflict: "phone" });
+
+      if (error) throw error;
+      return true;
+    } catch (e) {
+      console.error("DB upsertCustomer:", e);
+      return false;
+    }
+  },
+
+  onBookingsSnapshot(callback) {
+    if (!supabaseClient) return () => {};
+
+    const channel = supabaseClient
+      .channel("bookings-realtime")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "bookings" },
+        async () => {
+          const rows = await db.getAll("bookings", "booking_date", "desc");
+          callback((rows || []).map(b => ({
+            ...b,
+            booking_date: b.booking_date || "",
+            booking_time: b.booking_time || ""
+          })));
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabaseClient.removeChannel(channel);
+    };
   }
 };
 
@@ -143,11 +200,11 @@ function App() {
   const [sending,setSending] = useState(false);
   const [loading,setLoading] = useState(false);
 
-  // Firebase config
-  const [fbApiKey,setFbApiKey] = useState("");
-  const [fbProject,setFbProject] = useState("");
-  const [fbConnected,setFbConnected] = useState(false);
-  const [showFb,setShowFb] = useState(false);
+  // Supabase config
+  const [sbUrl,setSbUrl] = useState("");
+  const [sbAnonKey,setSbAnonKey] = useState("");
+  const [dbConnected,setDbConnected] = useState(false);
+  const [showDb,setShowDb] = useState(false);
 
   // WhatsBot
   const [waToken] = useState("669c3f9310ef5");
@@ -233,37 +290,44 @@ function App() {
   const today = new Date().toISOString().split("T")[0];
   const perPage = 10;
 
-  // ═══ Connect Firebase ═══
-  const connectFb = () => {
-    if (!fbApiKey || !fbProject) { setToast({msg:"أدخل API Key و Project ID",type:"error"}); return; }
-    const ok = initFirebase({
-      apiKey: fbApiKey,
-      authDomain: `${fbProject}.firebaseapp.com`,
-      projectId: fbProject,
-      storageBucket: `${fbProject}.appspot.com`,
-      messagingSenderId: "000000000",
-      appId: "1:000:web:000"
-    });
-    if (ok) {
-      setFbConnected(true);
-      setToast({msg:"✅ تم الاتصال بـ Firebase بنجاح!",type:"success"});
-      // Start realtime listener
-      fb.onSnapshot("bookings", data => {
-        if (data.length) setBookings(data.map(b=>({...b,booking_date:b.booking_date||"",booking_time:b.booking_time||""})));
-      }, "booking_date", "desc");
-    } else {
-      setToast({msg:"فشل الاتصال — تحقق من البيانات",type:"error"});
+  // ═══ Connect Supabase ═══
+  const connectDb = async () => {
+    if (!sbUrl || !sbAnonKey) {
+      setToast({msg:"أدخل Supabase URL و Anon Key",type:"error"});
+      return;
     }
+
+    const ok = initSupabase(sbUrl, sbAnonKey);
+    if (!ok) {
+      setToast({msg:"فشل الاتصال — تحقق من بيانات Supabase",type:"error"});
+      return;
+    }
+
+    setDbConnected(true);
+    setToast({msg:"✅ تم الاتصال بـ Supabase بنجاح!",type:"success"});
+
+    const data = await db.getAll("bookings", "booking_date", "desc");
+    if (data.length) {
+      setBookings(data.map(b => ({
+        ...b,
+        booking_date: b.booking_date || "",
+        booking_time: b.booking_time || ""
+      })));
+    }
+
+    db.onBookingsSnapshot((rows) => {
+      if (rows.length) setBookings(rows);
+    });
   };
 
   // Load bookings
   const loadBookings = useCallback(async()=>{
-    if(!fbConnected) return;
+    if(!dbConnected) return;
     setLoading(true);
-    const data = await fb.getAll("bookings","booking_date","desc");
+    const data = await db.getAll("bookings","booking_date","desc");
     if(data.length) setBookings(data);
     setLoading(false);
-  },[fbConnected]);
+  },[dbConnected]);
 
   // Derived data
   const todayBk = bookings.filter(b=>b.booking_date===today);
@@ -307,7 +371,7 @@ function App() {
           try{await fetch("https://whatsbot.at/api/send_pedido",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({number:fmtPh(bk.customer_phone),type:"text",message:MSG.reminder(bk),instance_id:waInst,access_token:waToken})});
           setReminded(p=>new Set([...p,bk.id]));
           setBookings(p=>p.map(b=>b.id===bk.id?{...b,reminded:true}:b));
-          if(fbConnected)fb.update("bookings",bk.id,{reminded:true});
+          if(dbConnected)db.update("bookings",bk.id,{reminded:true});
           setToast({msg:`⏰ تذكير: تم إشعار ${bk.customer_name}`,type:"success"});}catch{}
         }
       }
@@ -323,7 +387,7 @@ function App() {
     try{
       const message=type==="cancellation"?MSG[type](bk,reason):MSG[type](bk);
       const res=await fetch("https://whatsbot.at/api/send_pedido",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({number:fmtPh(bk.customer_phone),type:"text",message,instance_id:waInst,access_token:waToken})});
-      if(res.ok){setToast({msg:`تم إرسال ${type==="confirmation"?"تأكيد":type==="reminder"?"تذكير":"إلغاء"} لـ ${bk.customer_name} ✓`,type:"success"});if(fbConnected)fb.update("bookings",bk.id,{notified:true});setBookings(p=>p.map(b=>b.id===bk.id?{...b,notified:true}:b));return true;}
+      if(res.ok){setToast({msg:`تم إرسال ${type==="confirmation"?"تأكيد":type==="reminder"?"تذكير":"إلغاء"} لـ ${bk.customer_name} ✓`,type:"success"});if(dbConnected)db.update("bookings",bk.id,{notified:true});setBookings(p=>p.map(b=>b.id===bk.id?{...b,notified:true}:b));return true;}
       else{setToast({msg:`فشل: ${res.status}`,type:"error"});return false;}
     }catch(e){setToast({msg:`خطأ: ${e.message}`,type:"error"});return false;}
     finally{setSending(false);}
@@ -332,7 +396,7 @@ function App() {
   // ═══ Update Status ═══
   const updSt = async(bk,ns)=>{
     if(ns==="cancelled"){setCancelModal(bk);setCancelReason("");return;}
-    if(fbConnected)fb.update("bookings",bk.id,{status:ns});
+    if(dbConnected)db.update("bookings",bk.id,{status:ns});
     setBookings(p=>p.map(b=>b.id===bk.id?{...b,status:ns}:b));
     const up={...bk,status:ns};
     if(ns==="confirmed"&&autoConf&&waOk)await sendWA(up,"confirmation");
@@ -342,7 +406,7 @@ function App() {
   const confirmCancel = async()=>{
     if(!cancelModal)return;const bk=cancelModal,reason=cancelReason.trim();
     if(!reason){setToast({msg:"يرجى إدخال سبب الإلغاء",type:"error"});return;}
-    if(fbConnected)fb.update("bookings",bk.id,{status:"cancelled",cancel_reason:reason});
+    if(dbConnected)db.update("bookings",bk.id,{status:"cancelled",cancel_reason:reason});
     setBookings(p=>p.map(b=>b.id===bk.id?{...b,status:"cancelled",cancel_reason:reason}:b));
     if(autoCanc&&waOk)await sendWA({...bk,status:"cancelled"},"cancellation",reason);
     setSel({...bk,status:"cancelled"});setCancelModal(null);setCancelReason("");
@@ -364,7 +428,7 @@ function App() {
     const nr={...redemptions};if(!nr[c.phone])nr[c.phone]=[];
     nr[c.phone].push({name:rw.name,points:rw.points,discount:rw.discount,date:today});
     setRedemptions(nr);
-    if(fbConnected)fb.add("redemptions",{customer_phone:c.phone,reward_name:rw.name,points_used:rw.points,discount_amount:rw.discount});
+    if(dbConnected)db.add("redemptions",{customer_phone:c.phone,reward_name:rw.name,points_used:rw.points,discount_amount:rw.discount});
     if(waOk){try{await fetch("https://whatsbot.at/api/send_pedido",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({number:fmtPh(c.phone),type:"text",message:`🎁 مكافأة ولاء - إبداع عمار\n\nمرحباً ${c.name}،\nتم استبدال نقاطك!\n\n🏆 ${rw.name}\n⭐ مستخدم: ${rw.points} نقطة\n📊 المتبقي: ${getAvailPts(c)-rw.points}\n\nأبرز الكوبون عند زيارتك. 💈`,instance_id:waInst,access_token:waToken})});setToast({msg:`تم استبدال ${rw.points} نقطة ✓`,type:"success"});}catch{setToast({msg:"تم الاستبدال",type:"info"});}}
     setRedeemModal(null);
   };
@@ -387,7 +451,7 @@ function App() {
             <h1 style={{fontSize:20,fontWeight:800,color:"#fff",margin:0}}>إبداع عمار 💈</h1>
           </div>
           <div style={{display:"flex",alignItems:"center",gap:6}}>
-            {fbConnected&&<span style={{fontSize:9,background:"#ff990022",color:"#ff9900",padding:"3px 8px",borderRadius:10}}>🔥 FB</span>}
+            {dbConnected&&<span style={{fontSize:9,background:"#16a34a22",color:"#22c55e",padding:"3px 8px",borderRadius:10}}>⚡ SB</span>}
             {waOk&&<span style={{fontSize:9,background:"#25d36622",color:"#34d399",padding:"3px 8px",borderRadius:10}}>WA ✓</span>}
             <div style={{width:36,height:36,borderRadius:10,background:"linear-gradient(135deg,#c0a062,#8b6914)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,fontWeight:900,color:"#fff"}}>ع</div>
           </div>
@@ -396,7 +460,7 @@ function App() {
 
       {/* ═══ HOME ═══ */}
       {tab==="home"&&!sub&&(<div style={{padding:"0 16px",animation:"fadeUp 0.3s ease"}}>
-        {!fbConnected&&(<div onClick={()=>{setTab("settings");setShowFb(true);}} className="ct" style={{background:"#1a1a40",border:"1px solid #ff990033",borderRadius:12,padding:"12px 16px",marginBottom:10,cursor:"pointer",display:"flex",alignItems:"center",gap:10}}><span style={{fontSize:18}}>🔥</span><div><div style={{fontSize:13,fontWeight:700,color:"#ff9900"}}>ربط Firebase</div><div style={{fontSize:11,color:"#ff990088"}}>اضغط للإعداد</div></div></div>)}
+        {!dbConnected&&(<div onClick={()=>{setTab("settings");setShowDb(true);}} className="ct" style={{background:"#1a1a40",border:"1px solid #ff990033",borderRadius:12,padding:"12px 16px",marginBottom:10,cursor:"pointer",display:"flex",alignItems:"center",gap:10}}><span style={{fontSize:18}}>🔥</span><div><div style={{fontSize:13,fontWeight:700,color:"#22c55e"}}>ربط Supabase</div><div style={{fontSize:11,color:"#22c55e88"}}>اضغط للإعداد</div></div></div>)}
 
         {autoRem&&waOk&&nextRem&&(<div style={{background:"linear-gradient(135deg,#1a1a40,#131328)",border:"1px solid #818cf833",borderRadius:12,padding:"10px 14px",marginBottom:10,display:"flex",alignItems:"center",justifyContent:"space-between"}}><div style={{display:"flex",alignItems:"center",gap:8}}><span style={{fontSize:18,animation:"pulse 2s infinite"}}>⏰</span><div><div style={{fontSize:12,fontWeight:700,color:"#818cf8"}}>التذكير القادم</div><div style={{fontSize:11,color:"#8b8ba3"}}>{nextRem.name} — {nextRem.time}</div></div></div><div style={{background:"#818cf822",padding:"4px 10px",borderRadius:8}}><span style={{fontSize:12,fontWeight:800,color:"#818cf8"}}>{nextRem.min} د</span></div></div>)}
 
@@ -505,17 +569,17 @@ function App() {
 
       {/* ═══ SETTINGS ═══ */}
       {tab==="settings"&&(<div style={{padding:"0 16px",animation:"fadeUp 0.3s ease"}}>
-        {/* Firebase */}
+        {/* Supabase */}
         <div style={{background:"#131328",borderRadius:14,padding:16,marginBottom:10}}>
-          <div onClick={()=>setShowFb(!showFb)} className="ct" style={{display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer"}}>
-            <div style={{display:"flex",alignItems:"center",gap:10}}><div style={{width:38,height:38,borderRadius:10,background:"#ff990022",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18}}>🔥</div><div><div style={{fontSize:13,fontWeight:700,color:"#fff"}}>Firebase</div><div style={{fontSize:11,color:fbConnected?"#34d399":"#666680"}}>{fbConnected?"✅ متصل":"أدخل بيانات Firebase"}</div></div></div>
-            <span style={{color:"#555578",transform:showFb?"rotate(90deg)":"none",transition:"0.2s"}}>←</span>
+          <div onClick={()=>setShowDb(!showDb)} className="ct" style={{display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer"}}>
+            <div style={{display:"flex",alignItems:"center",gap:10}}><div style={{width:38,height:38,borderRadius:10,background:"#ff990022",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18}}>🔥</div><div><div style={{fontSize:13,fontWeight:700,color:"#fff"}}>Supabase</div><div style={{fontSize:11,color:dbConnected?"#34d399":"#666680"}}>{dbConnected?"✅ متصل":"أدخل بيانات Supabase"}</div></div></div>
+            <span style={{color:"#555578",transform:showDb?"rotate(90deg)":"none",transition:"0.2s"}}>←</span>
           </div>
-          {showFb&&(<div style={{marginTop:14,paddingTop:14,borderTop:"1px solid #1a1a30"}}>
-            <div style={{marginBottom:10}}><label style={{fontSize:11,color:"#8b8ba3",marginBottom:4,display:"block"}}>🔑 Firebase API Key</label><input placeholder="AIzaSy..." value={fbApiKey} onChange={e=>setFbApiKey(e.target.value.trim())} style={{...inp,direction:"ltr",textAlign:"left"}}/></div>
-            <div style={{marginBottom:10}}><label style={{fontSize:11,color:"#8b8ba3",marginBottom:4,display:"block"}}>📦 Project ID</label><input placeholder="ebda3-ammar" value={fbProject} onChange={e=>setFbProject(e.target.value.trim())} style={{...inp,direction:"ltr",textAlign:"left"}}/></div>
-            <button className="bt" onClick={connectFb} style={{width:"100%",padding:11,borderRadius:10,border:"none",background:fbConnected?"#34d399":"linear-gradient(135deg,#ff9900,#ff6600)",color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif"}}>{fbConnected?"✅ متصل":"🔥 اتصال بـ Firebase"}</button>
-            <div style={{fontSize:10,color:"#555578",marginTop:6,textAlign:"center"}}>Firebase Console → Project Settings → Web App → Config</div>
+          {showDb&&(<div style={{marginTop:14,paddingTop:14,borderTop:"1px solid #1a1a30"}}>
+            <div style={{marginBottom:10}}><label style={{fontSize:11,color:"#8b8ba3",marginBottom:4,display:"block"}}>🔗 Supabase URL</label><input placeholder="https://your-project.supabase.co" value={sbUrl} onChange={e=>setSbUrl(e.target.value.trim())} style={{...inp,direction:"ltr",textAlign:"left"}}/></div>
+            <div style={{marginBottom:10}}><label style={{fontSize:11,color:"#8b8ba3",marginBottom:4,display:"block"}}>🔑 Supabase Anon Key</label><input placeholder="eyJhbGciOi..." value={sbAnonKey} onChange={e=>setSbAnonKey(e.target.value.trim())} style={{...inp,direction:"ltr",textAlign:"left"}}/></div>
+            <button className="bt" onClick={connectDb} style={{width:"100%",padding:11,borderRadius:10,border:"none",background:dbConnected?"#34d399":"linear-gradient(135deg,#ff9900,#ff6600)",color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif"}}>{dbConnected?"✅ متصل":"⚡ اتصال بـ Supabase"}</button>
+            <div style={{fontSize:10,color:"#555578",marginTop:6,textAlign:"center"}}>Supabase Dashboard → Project Settings → API</div>
           </div>)}
         </div>
 
@@ -528,7 +592,7 @@ function App() {
           {showWa&&(<div style={{marginTop:14,paddingTop:14,borderTop:"1px solid #1a1a30"}}>
             <div style={{...inp,background:"#0d0d1a",color:"#34d399",fontSize:12,marginBottom:10,direction:"ltr",textAlign:"left"}}>Token: {waToken}</div>
             <div style={{...inp,background:"#0d0d1a",color:"#34d399",fontSize:12,marginBottom:10,direction:"ltr",textAlign:"left"}}>Instance: {waInst}</div>
-            <button className="bt" onClick={async()=>{setSending(true);try{const r=await fetch("https://whatsbot.at/api/send_pedido",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({number:"966566626652",type:"text",message:"✅ لوحة إبداع عمار متصلة!\n🔥 Firebase + WhatsBot",instance_id:waInst,access_token:waToken})});setToast({msg:r.ok?"تحقق الواتساب ✓":"فشل: "+r.status,type:r.ok?"success":"error"});}catch(e){setToast({msg:e.message,type:"error"});}finally{setSending(false);}}} disabled={sending} style={{width:"100%",padding:11,borderRadius:10,border:"none",background:"#25d366",color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif"}}>🧪 تجربة الإرسال</button>
+            <button className="bt" onClick={async()=>{setSending(true);try{const r=await fetch("https://whatsbot.at/api/send_pedido",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({number:"966566626652",type:"text",message:"✅ لوحة إبداع عمار متصلة!\n⚡ Supabase + WhatsBot",instance_id:waInst,access_token:waToken})});setToast({msg:r.ok?"تحقق الواتساب ✓":"فشل: "+r.status,type:r.ok?"success":"error"});}catch(e){setToast({msg:e.message,type:"error"});}finally{setSending(false);}}} disabled={sending} style={{width:"100%",padding:11,borderRadius:10,border:"none",background:"#25d366",color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif"}}>🧪 تجربة الإرسال</button>
           </div>)}
         </div>
 
