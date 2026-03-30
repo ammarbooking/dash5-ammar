@@ -1,0 +1,762 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no"/>
+<meta name="theme-color" content="#0b0b18"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<title>إبداع عمار - لوحة التحكم</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💈</text></svg>"/>
+<link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@300;400;500;700;800;900&display=swap" rel="stylesheet"/>
+<style>body{margin:0;padding:0;background:#0b0b18;font-family:'Tajawal',sans-serif;}</style>
+
+<!-- Firebase SDK -->
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+
+<!-- React -->
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useCallback, useRef } = React;
+
+// ═══════════════════════════════════════════
+// Firebase Helper
+// ═══════════════════════════════════════════
+let firebaseApp = null;
+let firestoreDb = null;
+
+function initFirebase(config) {
+  try {
+    firebaseApp = firebase.initializeApp(config);
+    firestoreDb = firebase.firestore();
+    return true;
+  } catch (e) {
+    console.error("Firebase init error:", e);
+    return false;
+  }
+}
+
+const fb = {
+  async getAll(collection, orderBy = "created_at", dir = "desc") {
+    if (!firestoreDb) return [];
+    try {
+      const snap = await firestoreDb.collection(collection).orderBy(orderBy, dir).get();
+      return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    } catch (e) { console.error("FB get:", e); return []; }
+  },
+  async add(collection, data) {
+    if (!firestoreDb) return null;
+    try {
+      const ref = await firestoreDb.collection(collection).add({ ...data, created_at: firebase.firestore.FieldValue.serverTimestamp() });
+      return { id: ref.id, ...data };
+    } catch (e) { console.error("FB add:", e); return null; }
+  },
+  async update(collection, id, data) {
+    if (!firestoreDb) return false;
+    try { await firestoreDb.collection(collection).doc(id).update(data); return true; }
+    catch (e) { console.error("FB update:", e); return false; }
+  },
+  async upsertCustomer(phone, data) {
+    if (!firestoreDb) return;
+    try {
+      const snap = await firestoreDb.collection("customers").where("phone", "==", phone).get();
+      if (snap.empty) await firestoreDb.collection("customers").add({ ...data, created_at: firebase.firestore.FieldValue.serverTimestamp() });
+      else await snap.docs[0].ref.update(data);
+    } catch (e) { console.error("FB upsert:", e); }
+  },
+  onSnapshot(collection, callback, orderBy = "created_at", dir = "desc") {
+    if (!firestoreDb) return () => {};
+    return firestoreDb.collection(collection).orderBy(orderBy, dir).onSnapshot(snap => {
+      callback(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    });
+  }
+};
+
+// ═══════════════════════════════════════════
+// Constants
+// ═══════════════════════════════════════════
+const SERVICES = { "تركيب شعر": 1700, "تغيير لاصق": 150 };
+const STATUSES = { confirmed: "مؤكد", pending: "بانتظار", cancelled: "ملغي" };
+const SC = { confirmed:{bg:"#0d3320",text:"#34d399",dot:"#34d399"}, pending:{bg:"#3b2f0a",text:"#fbbf24",dot:"#fbbf24"}, cancelled:{bg:"#3b1118",text:"#f87171",dot:"#f87171"} };
+
+// Loyalty
+const PTS = { "تركيب شعر": 50, "تغيير لاصق": 10 };
+const ATT_BONUS = 5;
+const TIERS = [
+  { name:"برونزي",min:0,icon:"🥉",color:"#cd7f32",bg:"#cd7f3215",next:50 },
+  { name:"فضي",min:50,icon:"🥈",color:"#c0c0c0",bg:"#c0c0c015",next:150 },
+  { name:"ذهبي",min:150,icon:"🥇",color:"#ffd700",bg:"#ffd70015",next:300 },
+  { name:"ماسي",min:300,icon:"💎",color:"#b9f2ff",bg:"#b9f2ff15",next:null },
+];
+const getTier = p => [...TIERS].reverse().find(t=>p>=t.min)||TIERS[0];
+const getProgress = p => {const t=getTier(p);if(!t.next)return 100;return Math.min(((p-t.min)/(t.next-t.min))*100,100);};
+const getNextTier = p => {const t=getTier(p);const i=TIERS.indexOf(t);return i<TIERS.length-1?TIERS[i+1]:null;};
+const calcPts = bks => bks.filter(b=>b.status==="confirmed").reduce((s,b)=>s+(PTS[b.service]||0)+ATT_BONUS,0);
+
+// Rewards
+const REWARDS = [
+  {id:"r1",name:"خصم 50 ر.س على تركيب شعر",points:50,discount:50,icon:"🎫"},
+  {id:"r2",name:"تغيير لاصق مجاني",points:30,discount:150,icon:"🎁"},
+  {id:"r3",name:"خصم 100 ر.س على تركيب شعر",points:100,discount:100,icon:"💰"},
+  {id:"r4",name:"خصم 200 ر.س على تركيب شعر",points:180,discount:200,icon:"🔥"},
+  {id:"r5",name:"تركيب شعر مجاني!",points:300,discount:1700,icon:"👑"},
+];
+
+// Messages
+const MSG = {
+  confirmation: b=>{const pts=PTS[b.service]||0;return `✅ تأكيد حجز - إبداع عمار\n\nمرحباً ${b.customer_name}،\nتم تأكيد حجزك!\n\n📋 #${b.id?.slice(-6)||""}\n✂️ ${b.service}\n📍 ${b.branch}\n📅 ${b.booking_date}\n🕐 ${b.booking_time}\n💰 ${b.price} ر.س\n\n⭐ ستحصل على ${pts+ATT_BONUS} نقطة ولاء!\n\nنتطلع لخدمتكم! 💈`;},
+  reminder: b=>`⏰ تذكير - إبداع عمار\n\nمرحباً ${b.customer_name}،\nموعدك بعد نصف ساعة!\n\n📅 ${b.booking_date}\n🕐 ${b.booking_time}\n📍 ${b.branch}\n✂️ ${b.service}\n\nفي انتظاركم 💈`,
+  cancellation: (b,r)=>`❌ إلغاء حجز - إبداع عمار\n\nمرحباً ${b.customer_name}،\nتم إلغاء حجزك.\n\n✂️ ${b.service}\n📍 ${b.branch}\n📅 ${b.booking_date}\n🕐 ${b.booking_time}\n${r?`\n📌 السبب: ${r}\n`:""}\nيمكنك إعادة الحجز. 🙏`,
+};
+
+// Demo
+const mkDemo = ()=>Array.from({length:20},(_,i)=>{const nm=["محمد العتيبي","خالد الشمري","عبدالله القحطاني","فهد الدوسري","سعد المطيري","أحمد الغامدي","عمر الحربي","يوسف الزهراني"][i%8];const d=new Date();d.setDate(d.getDate()-Math.floor(Math.random()*15));const sv=i%4===0?"تغيير لاصق":"تركيب شعر";return{id:"demo"+i,customer_name:nm,customer_phone:["0551234567","0562345678","0531234567","0541234567","0571234567"][i%5],branch:i%3===0?"الدمام":"الرياض",service:sv,price:SERVICES[sv],booking_date:d.toISOString().split("T")[0],booking_time:["09:00","10:00","11:00","01:00","02:00","03:00"][i%6],status:["confirmed","confirmed","pending","pending","cancelled"][i%5],payment_method:i%2?"تحويل بنكي":"دفع عند الزيارة",notified:false};}).sort((a,b)=>b.booking_date.localeCompare(a.booking_date));
+
+// Components
+const Badge = ({status,small})=>{const c=SC[status]||SC.pending;return React.createElement("span",{style:{display:"inline-flex",alignItems:"center",gap:5,background:c.bg,color:c.text,padding:small?"2px 10px":"4px 12px",borderRadius:20,fontSize:small?11:12,fontWeight:600}},React.createElement("span",{style:{width:5,height:5,borderRadius:"50%",background:c.dot}}),STATUSES[status]||status);};
+
+const Toast = ({msg,type,onClose})=>{useEffect(()=>{const t=setTimeout(onClose,4000);return()=>clearTimeout(t);},[]);const cl={success:"#34d399",error:"#f87171",info:"#60a5fa"};return React.createElement("div",{style:{position:"fixed",top:20,left:"50%",transform:"translateX(-50%)",background:"#1a1a2e",border:`1px solid ${cl[type]}`,color:"#fff",padding:"12px 20px",borderRadius:12,fontSize:13,fontWeight:600,zIndex:200,maxWidth:"90vw",textAlign:"center"}},(type==="success"?"✅":type==="error"?"❌":"ℹ️")+" "+msg);};
+
+const Toggle = ({value,onChange,label})=>React.createElement("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"14px 0",borderBottom:"1px solid #1a1a30"}},React.createElement("span",{style:{fontSize:14,color:"#e0e0f0"}},label),React.createElement("div",{onClick:onChange,style:{width:48,height:26,borderRadius:13,cursor:"pointer",background:value?"#34d399":"#2a2a4a",transition:"all 0.3s",position:"relative"}},React.createElement("div",{style:{width:20,height:20,borderRadius:"50%",background:"#fff",position:"absolute",top:3,right:value?3:"auto",left:value?"auto":3,transition:"all 0.3s"}})));
+
+// ═══════════════════════════════════════════
+// MAIN APP
+// ═══════════════════════════════════════════
+function App() {
+  const [bookings,setBookings] = useState(mkDemo);
+  const [tab,setTab] = useState("home");
+  const [sub,setSub] = useState(null);
+  const [sel,setSel] = useState(null);
+  const [selCust,setSelCust] = useState(null);
+  const [search,setSearch] = useState("");
+  const [branch,setBranch] = useState("الكل");
+  const [statusF,setStatusF] = useState("الكل");
+  const [page,setPage] = useState(0);
+  const [toast,setToast] = useState(null);
+  const [sending,setSending] = useState(false);
+  const [loading,setLoading] = useState(false);
+
+  // Firebase config
+  const [fbApiKey,setFbApiKey] = useState("");
+  const [fbProject,setFbProject] = useState("");
+  const [fbConnected,setFbConnected] = useState(false);
+  const [showFb,setShowFb] = useState(false);
+
+  // WhatsBot
+  const [waToken] = useState("669c3f9310ef5");
+  const [waInst,setWaInst] = useState("669D7FC419A08");
+  const [showWa,setShowWa] = useState(false);
+  const [autoConf,setAutoConf] = useState(true);
+  const [autoCanc,setAutoCanc] = useState(true);
+  const [autoRem,setAutoRem] = useState(true);
+  const [remMin,setRemMin] = useState(30);
+  const [reminded,setReminded] = useState(new Set());
+  const [nextRem,setNextRem] = useState(null);
+
+  // Bulk
+  const [bulkMsg,setBulkMsg] = useState("");
+  const [bulkTarget,setBulkTarget] = useState("all");
+  const [bulkProg,setBulkProg] = useState({s:0,t:0,on:false});
+
+  // Cancel
+  const [cancelModal,setCancelModal] = useState(null);
+  const [cancelReason,setCancelReason] = useState("");
+  const CANCEL_REASONS = ["تعارض مواعيد","طلب العميل","ظروف طارئة","عدم الحضور","تأجيل لوقت آخر","أخرى"];
+
+  // Redeem
+  const [redeemModal,setRedeemModal] = useState(null);
+  const [redemptions,setRedemptions] = useState({});
+  const getRedPts = ph=>(redemptions[ph]||[]).reduce((s,r)=>s+r.points,0);
+  const getAvailPts = c=>c.points-getRedPts(c.phone);
+
+  // ═══ STAMP CARD ═══
+  const [stampData,setStampData] = useState(()=>{try{return JSON.parse(localStorage.getItem("loyalty-stamps"))||{}}catch{return{}}});
+  const saveStamps = d=>{setStampData(d);localStorage.setItem("loyalty-stamps",JSON.stringify(d))};
+  const [scanPhone,setScanPhone] = useState("");
+  const [scanResult2,setScanResult2] = useState(null);
+  const [scannerOn,setScannerOn] = useState(false);
+  const scanRef = useRef(null);
+
+  const getStamp = ph => stampData[ph] || {stamps:[false,false,false,false,false],rewards:0};
+  const stampCount = ph => getStamp(ph).stamps.filter(Boolean).length;
+
+  const addStamp = async(ph) => {
+    const c = custMap[ph] || customers.find(x=>x.phone===ph);
+    if(!c) { setToast({msg:"العميل غير موجود",type:"error"}); return; }
+    const st = getStamp(ph);
+    const ni = st.stamps.findIndex(s=>!s);
+    if(ni===-1){setToast({msg:"البطاقة مكتملة! اضغط إعادة تعيين",type:"error"});return;}
+    st.stamps[ni]=true;
+    let msg;
+    if(ni<4) msg=`✦ مرحباً ${c.name}!\nتم إضافة ختم ${ni+1}/٥ 🎉\nباقي ${4-ni} للهدية! 🎁\n💈 إبداع عمار`;
+    else { st.rewards=(st.rewards||0)+1; msg=`🎉 مبروك ${c.name}!\nأكملت ٥ أختام!\nطلبك المجاني بانتظارك 🎁\n💈 إبداع عمار`; }
+    const upd={...stampData,[ph]:st};saveStamps(upd);
+    setScanResult2({...c,phone:ph,...getStamp(ph)});
+    setToast({msg:`تم إضافة ختم لـ ${c.name} ✓`,type:"success"});
+    if(waOk){try{await fetch("https://whatsbot.at/api/send_pedido",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({number:fmtPh(ph),type:"text",message:msg,instance_id:waInst,access_token:waToken})});}catch{}}
+    if(ni===4){setTimeout(()=>{st.stamps=[false,false,false,false,false];saveStamps({...stampData,[ph]:st});setScanResult2(prev=>({...prev,stamps:st.stamps}));setToast({msg:"تم إعادة تعيين البطاقة تلقائياً ♻️",type:"info"});},3000);}
+  };
+  const resetStamp = ph=>{const st=getStamp(ph);st.stamps=[false,false,false,false,false];saveStamps({...stampData,[ph]:st});setScanResult2(prev=>prev?{...prev,stamps:st.stamps}:null);setToast({msg:"تم إعادة التعيين",type:"success"})};
+
+  // QR Scanner
+  const startScanner = ()=>{
+    const el=document.getElementById("qr-reader2");if(!el)return;
+    el.style.display="block";
+    scanRef.current = new Html5Qrcode("qr-reader2");
+    scanRef.current.start({facingMode:"environment"},{fps:10,qrbox:{width:250,height:250}},
+      (text)=>{let ph=text;if(ph.startsWith("LOYALTY:"))ph=ph.replace("LOYALTY:","");ph=ph.trim();
+        const c=custMap[ph]||customers.find(x=>x.phone===ph);
+        if(c){setScanResult2({...c,phone:ph,...getStamp(ph)});setScanPhone(ph);stopScanner();setToast({msg:`تم مسح ${c.name} ✓`,type:"success"});if(navigator.vibrate)navigator.vibrate(200);}
+        else{setToast({msg:"العميل غير موجود: "+ph,type:"error"});}
+      },()=>{}
+    ).then(()=>setScannerOn(true)).catch(e=>{setToast({msg:"لا يمكن فتح الكاميرا",type:"error"});el.style.display="none";});
+  };
+  const stopScanner = ()=>{if(scanRef.current&&scannerOn){scanRef.current.stop().then(()=>{setScannerOn(false);const el=document.getElementById("qr-reader2");if(el)el.style.display="none";}).catch(()=>{});}};
+
+  // ═══ EMPLOYEES ═══
+  const [employees,setEmployees] = useState(()=>{try{return JSON.parse(localStorage.getItem("loyalty-employees"))||{}}catch{return{}}});
+  const [isEmpLogin,setIsEmpLogin] = useState(false);
+  const [currentEmp,setCurrentEmp] = useState(null);
+  const saveEmps = d=>{setEmployees(d);localStorage.setItem("loyalty-employees",JSON.stringify(d))};
+  const [newEmpName,setNewEmpName] = useState("");
+  const [newEmpPin,setNewEmpPin] = useState("");
+  const [newEmpBranch,setNewEmpBranch] = useState("الرياض");
+
+  const waOk = waToken && waInst;
+  const today = new Date().toISOString().split("T")[0];
+  const perPage = 10;
+
+  // ═══ Connect Firebase ═══
+  const connectFb = () => {
+    if (!fbApiKey || !fbProject) { setToast({msg:"أدخل API Key و Project ID",type:"error"}); return; }
+    const ok = initFirebase({
+      apiKey: fbApiKey,
+      authDomain: `${fbProject}.firebaseapp.com`,
+      projectId: fbProject,
+      storageBucket: `${fbProject}.appspot.com`,
+      messagingSenderId: "000000000",
+      appId: "1:000:web:000"
+    });
+    if (ok) {
+      setFbConnected(true);
+      setToast({msg:"✅ تم الاتصال بـ Firebase بنجاح!",type:"success"});
+      // Start realtime listener
+      fb.onSnapshot("bookings", data => {
+        if (data.length) setBookings(data.map(b=>({...b,booking_date:b.booking_date||"",booking_time:b.booking_time||""})));
+      }, "booking_date", "desc");
+    } else {
+      setToast({msg:"فشل الاتصال — تحقق من البيانات",type:"error"});
+    }
+  };
+
+  // Load bookings
+  const loadBookings = useCallback(async()=>{
+    if(!fbConnected) return;
+    setLoading(true);
+    const data = await fb.getAll("bookings","booking_date","desc");
+    if(data.length) setBookings(data);
+    setLoading(false);
+  },[fbConnected]);
+
+  // Derived data
+  const todayBk = bookings.filter(b=>b.booking_date===today);
+  const cCount = bookings.filter(b=>b.status==="confirmed").length;
+  const pCount = bookings.filter(b=>b.status==="pending").length;
+  const mRev = bookings.filter(b=>{const d=new Date(b.booking_date),n=new Date();return d.getMonth()===n.getMonth()&&d.getFullYear()===n.getFullYear()&&b.status==="confirmed";}).reduce((s,b)=>s+b.price,0);
+
+  // Customers
+  const custMap = {};
+  bookings.forEach(b=>{const p=b.customer_phone;if(!custMap[p])custMap[p]={name:b.customer_name,phone:p,branch:b.branch,visits:0,spent:0,last:b.booking_date,svcs:[],cBks:[]};custMap[p].visits++;if(b.status==="confirmed"){custMap[p].spent+=b.price;custMap[p].cBks.push(b);}if(b.booking_date>custMap[p].last)custMap[p].last=b.booking_date;if(!custMap[p].svcs.includes(b.service))custMap[p].svcs.push(b.service);});
+  const customers = Object.values(custMap).map(c=>({...c,points:calcPts(c.cBks),tier:getTier(calcPts(c.cBks))})).sort((a,b)=>b.points-a.points);
+
+  const filt = bookings.filter(b=>{
+    if(branch!=="الكل"&&b.branch!==branch)return false;
+    if(statusF!=="الكل"&&b.status!==statusF)return false;
+    if(search&&!b.customer_name?.includes(search)&&!b.customer_phone?.includes(search)&&!String(b.id).includes(search))return false;
+    return true;
+  });
+  const pg = filt.slice(page*perPage,(page+1)*perPage);
+  const tPg = Math.ceil(filt.length/perPage);
+  useEffect(()=>setPage(0),[branch,search,statusF]);
+
+  const wk = Array.from({length:7},(_,i)=>{const d=new Date();d.setDate(d.getDate()-(6-i));const ds=d.toISOString().split("T")[0];return{day:["أحد","اثنين","ثلاثاء","أربعاء","خميس","جمعة","سبت"][d.getDay()],c:bookings.filter(b=>b.booking_date===ds&&b.status==="confirmed").length,t:ds===today};});
+  const mxW=Math.max(...wk.map(d=>d.c),1);
+
+  const fmtPh=p=>{let c=p.replace(/\D/g,"");if(c.startsWith("00"))c=c.slice(2);if(c.startsWith("0"))c="966"+c.slice(1);if(!c.startsWith("966"))c="966"+c;return c;};
+
+  // ═══ Auto-Reminder ═══
+  useEffect(()=>{
+    if(!autoRem||!waOk)return;
+    const check = async()=>{
+      const now=new Date(),ts=now.toISOString().split("T")[0];
+      const conf=bookings.filter(b=>b.booking_date===ts&&b.status==="confirmed"&&!reminded.has(b.id));
+      let closest=null;
+      for(const bk of conf){
+        const [h,m]=bk.booking_time.split(":");let hr=parseInt(h);if(hr<8)hr+=12;
+        const apt=new Date(now.getFullYear(),now.getMonth(),now.getDate(),hr,parseInt(m));
+        const diff=new Date(apt.getTime()-remMin*60000).getTime()-now.getTime();
+        if(diff>0&&(!closest||diff<closest.diff))closest={booking:bk,diff,time:bk.booking_time};
+        if(diff<=0&&diff>-60000){
+          try{await fetch("https://whatsbot.at/api/send_pedido",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({number:fmtPh(bk.customer_phone),type:"text",message:MSG.reminder(bk),instance_id:waInst,access_token:waToken})});
+          setReminded(p=>new Set([...p,bk.id]));
+          setBookings(p=>p.map(b=>b.id===bk.id?{...b,reminded:true}:b));
+          if(fbConnected)fb.update("bookings",bk.id,{reminded:true});
+          setToast({msg:`⏰ تذكير: تم إشعار ${bk.customer_name}`,type:"success"});}catch{}
+        }
+      }
+      setNextRem(closest?{name:closest.booking.customer_name,time:closest.time,min:Math.ceil(closest.diff/60000)}:null);
+    };
+    check();const i=setInterval(check,30000);return()=>clearInterval(i);
+  },[autoRem,waOk,bookings,reminded,remMin,waInst,waToken]);
+
+  // ═══ WhatsBot Send ═══
+  const sendWA = async(bk,type,reason)=>{
+    if(!waOk){setToast({msg:"أدخل Instance ID أولاً",type:"error"});return false;}
+    setSending(true);
+    try{
+      const message=type==="cancellation"?MSG[type](bk,reason):MSG[type](bk);
+      const res=await fetch("https://whatsbot.at/api/send_pedido",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({number:fmtPh(bk.customer_phone),type:"text",message,instance_id:waInst,access_token:waToken})});
+      if(res.ok){setToast({msg:`تم إرسال ${type==="confirmation"?"تأكيد":type==="reminder"?"تذكير":"إلغاء"} لـ ${bk.customer_name} ✓`,type:"success"});if(fbConnected)fb.update("bookings",bk.id,{notified:true});setBookings(p=>p.map(b=>b.id===bk.id?{...b,notified:true}:b));return true;}
+      else{setToast({msg:`فشل: ${res.status}`,type:"error"});return false;}
+    }catch(e){setToast({msg:`خطأ: ${e.message}`,type:"error"});return false;}
+    finally{setSending(false);}
+  };
+
+  // ═══ Update Status ═══
+  const updSt = async(bk,ns)=>{
+    if(ns==="cancelled"){setCancelModal(bk);setCancelReason("");return;}
+    if(fbConnected)fb.update("bookings",bk.id,{status:ns});
+    setBookings(p=>p.map(b=>b.id===bk.id?{...b,status:ns}:b));
+    const up={...bk,status:ns};
+    if(ns==="confirmed"&&autoConf&&waOk)await sendWA(up,"confirmation");
+    setSel(up);
+  };
+
+  const confirmCancel = async()=>{
+    if(!cancelModal)return;const bk=cancelModal,reason=cancelReason.trim();
+    if(!reason){setToast({msg:"يرجى إدخال سبب الإلغاء",type:"error"});return;}
+    if(fbConnected)fb.update("bookings",bk.id,{status:"cancelled",cancel_reason:reason});
+    setBookings(p=>p.map(b=>b.id===bk.id?{...b,status:"cancelled",cancel_reason:reason}:b));
+    if(autoCanc&&waOk)await sendWA({...bk,status:"cancelled"},"cancellation",reason);
+    setSel({...bk,status:"cancelled"});setCancelModal(null);setCancelReason("");
+    setToast({msg:`تم إلغاء حجز ${bk.customer_name} ✓`,type:"success"});
+  };
+
+  // Bulk
+  const sendBulk = async()=>{
+    if(!waOk||!bulkMsg.trim())return;
+    const tg=bulkTarget==="all"?customers:customers.filter(c=>c.branch===(bulkTarget==="riyadh"?"الرياض":"الدمام"));
+    setBulkProg({s:0,t:tg.length,on:true});let s=0;
+    for(const c of tg){try{await fetch("https://whatsbot.at/api/send_pedido",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({number:fmtPh(c.phone),type:"text",message:`💈 إبداع عمار\n\nمرحباً ${c.name}،\n${bulkMsg}`,instance_id:waInst,access_token:waToken})});s++;}catch{}setBulkProg({s,t:tg.length,on:true});await new Promise(r=>setTimeout(r,1500));}
+    setBulkProg({s,t:tg.length,on:false});setToast({msg:`تم إرسال ${s}/${tg.length} رسالة ✓`,type:"success"});
+  };
+
+  // Redeem
+  const confirmRedeem = async()=>{
+    if(!redeemModal)return;const{customer:c,reward:rw}=redeemModal;
+    const nr={...redemptions};if(!nr[c.phone])nr[c.phone]=[];
+    nr[c.phone].push({name:rw.name,points:rw.points,discount:rw.discount,date:today});
+    setRedemptions(nr);
+    if(fbConnected)fb.add("redemptions",{customer_phone:c.phone,reward_name:rw.name,points_used:rw.points,discount_amount:rw.discount});
+    if(waOk){try{await fetch("https://whatsbot.at/api/send_pedido",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({number:fmtPh(c.phone),type:"text",message:`🎁 مكافأة ولاء - إبداع عمار\n\nمرحباً ${c.name}،\nتم استبدال نقاطك!\n\n🏆 ${rw.name}\n⭐ مستخدم: ${rw.points} نقطة\n📊 المتبقي: ${getAvailPts(c)-rw.points}\n\nأبرز الكوبون عند زيارتك. 💈`,instance_id:waInst,access_token:waToken})});setToast({msg:`تم استبدال ${rw.points} نقطة ✓`,type:"success"});}catch{setToast({msg:"تم الاستبدال",type:"info"});}}
+    setRedeemModal(null);
+  };
+
+  const inp={width:"100%",padding:"12px 14px",background:"#1a1a30",border:"1px solid #2a2a4a",borderRadius:10,color:"#e0e0f0",fontSize:14,fontFamily:"'Tajawal',sans-serif",outline:"none"};
+
+  // ═══════════════════════════════════════════
+  // RENDER
+  // ═══════════════════════════════════════════
+  return(
+    <div style={{direction:"rtl",fontFamily:"'Tajawal',sans-serif",background:"#0b0b18",minHeight:"100vh",maxWidth:480,margin:"0 auto",position:"relative",paddingBottom:72,color:"#e0e0f0"}}>
+      <style>{`*{box-sizing:border-box;margin:0;padding:0}::-webkit-scrollbar{display:none}input::placeholder,textarea::placeholder{color:#555578}textarea{resize:vertical}@keyframes fadeUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}.ct:active{transform:scale(0.97);opacity:0.9}.ch:active{transform:scale(0.95)}.bt:active{transform:scale(0.95);opacity:0.85}`}</style>
+      {toast&&<Toast msg={toast.msg} type={toast.type} onClose={()=>setToast(null)}/>}
+
+      {/* Header */}
+      <div style={{padding:"20px 20px 16px",background:"linear-gradient(180deg,#131328,#0b0b18)"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <div>
+            <div style={{fontSize:11,color:"#666680",marginBottom:2}}>{new Date().toLocaleDateString("ar-SA",{weekday:"long",day:"numeric",month:"long"})}</div>
+            <h1 style={{fontSize:20,fontWeight:800,color:"#fff",margin:0}}>إبداع عمار 💈</h1>
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:6}}>
+            {fbConnected&&<span style={{fontSize:9,background:"#ff990022",color:"#ff9900",padding:"3px 8px",borderRadius:10}}>🔥 FB</span>}
+            {waOk&&<span style={{fontSize:9,background:"#25d36622",color:"#34d399",padding:"3px 8px",borderRadius:10}}>WA ✓</span>}
+            <div style={{width:36,height:36,borderRadius:10,background:"linear-gradient(135deg,#c0a062,#8b6914)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,fontWeight:900,color:"#fff"}}>ع</div>
+          </div>
+        </div>
+      </div>
+
+      {/* ═══ HOME ═══ */}
+      {tab==="home"&&!sub&&(<div style={{padding:"0 16px",animation:"fadeUp 0.3s ease"}}>
+        {!fbConnected&&(<div onClick={()=>{setTab("settings");setShowFb(true);}} className="ct" style={{background:"#1a1a40",border:"1px solid #ff990033",borderRadius:12,padding:"12px 16px",marginBottom:10,cursor:"pointer",display:"flex",alignItems:"center",gap:10}}><span style={{fontSize:18}}>🔥</span><div><div style={{fontSize:13,fontWeight:700,color:"#ff9900"}}>ربط Firebase</div><div style={{fontSize:11,color:"#ff990088"}}>اضغط للإعداد</div></div></div>)}
+
+        {autoRem&&waOk&&nextRem&&(<div style={{background:"linear-gradient(135deg,#1a1a40,#131328)",border:"1px solid #818cf833",borderRadius:12,padding:"10px 14px",marginBottom:10,display:"flex",alignItems:"center",justifyContent:"space-between"}}><div style={{display:"flex",alignItems:"center",gap:8}}><span style={{fontSize:18,animation:"pulse 2s infinite"}}>⏰</span><div><div style={{fontSize:12,fontWeight:700,color:"#818cf8"}}>التذكير القادم</div><div style={{fontSize:11,color:"#8b8ba3"}}>{nextRem.name} — {nextRem.time}</div></div></div><div style={{background:"#818cf822",padding:"4px 10px",borderRadius:8}}><span style={{fontSize:12,fontWeight:800,color:"#818cf8"}}>{nextRem.min} د</span></div></div>)}
+
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:16}}>
+          {[{i:"📅",l:"اليوم",v:todayBk.length,a:"#34d399"},{i:"💰",l:"الشهر",v:`${(mRev/1000).toFixed(1)}K`,a:"#c0a062"},{i:"⏳",l:"بانتظار",v:pCount,a:"#fbbf24"},{i:"👥",l:"عملاء",v:customers.length,a:"#818cf8"}].map((s,i)=>(<div key={i} style={{background:"#131328",borderRadius:14,padding:"14px 12px",borderRight:`3px solid ${s.a}`}}><div style={{fontSize:20,marginBottom:4}}>{s.i}</div><div style={{fontSize:10,color:"#8b8ba3"}}>{s.l}</div><div style={{fontSize:22,fontWeight:800,color:"#fff"}}>{s.v}</div></div>))}
+        </div>
+
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:16}}>
+          {[{i:"📨",l:"رسائل جماعية",a:()=>setSub("bulk")},{i:"📅",l:"التقويم",a:()=>setToast({msg:"اضغط أي حجز → إضافة للتقويم",type:"info"})},{i:"🔄",l:"تحديث",a:loadBookings}].map((x,i)=>(<div key={i} className="bt" onClick={x.a} style={{background:"#131328",borderRadius:12,padding:"12px 8px",textAlign:"center",cursor:"pointer"}}><div style={{fontSize:22,marginBottom:4}}>{x.i}</div><div style={{fontSize:10,fontWeight:600,color:"#8b8ba3"}}>{x.l}</div></div>))}
+        </div>
+
+        {/* Weekly */}
+        <div style={{background:"#131328",borderRadius:14,padding:14,marginBottom:16}}>
+          <div style={{fontSize:13,fontWeight:700,color:"#fff",marginBottom:12}}>📈 الأسبوع</div>
+          {wk.map((d,i)=>(<div key={i} style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}><span style={{fontSize:11,color:d.t?"#c0a062":"#666680",width:38,textAlign:"left",fontWeight:d.t?700:400}}>{d.day}</span><div style={{flex:1,height:20,background:"#1a1a30",borderRadius:5,overflow:"hidden"}}><div style={{width:`${Math.max((d.c/mxW)*100,2)}%`,height:"100%",background:d.t?"linear-gradient(90deg,#c0a062,#d4b878)":"#2a2a5a",borderRadius:5,display:"flex",alignItems:"center",justifyContent:"flex-end"}}>{d.c>0&&<span style={{fontSize:10,fontWeight:700,color:d.t?"#fff":"#888",paddingRight:5}}>{d.c}</span>}</div></div></div>))}
+        </div>
+
+        {/* Today */}
+        <div style={{display:"flex",justifyContent:"space-between",marginBottom:8}}><span style={{fontSize:13,fontWeight:700,color:"#fff"}}>📋 حجوزات اليوم</span><span onClick={()=>setTab("bookings")} style={{fontSize:11,color:"#c0a062",cursor:"pointer"}}>الكل ←</span></div>
+        {todayBk.length===0?<div style={{background:"#131328",borderRadius:12,padding:20,textAlign:"center",color:"#555578",fontSize:12}}>لا يوجد حجوزات</div>
+        :todayBk.slice(0,4).map((b,i)=>(<div key={b.id} className="ct" onClick={()=>setSel(b)} style={{background:"#131328",borderRadius:12,padding:"12px 14px",marginBottom:6,cursor:"pointer"}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}><div><div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3}}><span style={{fontSize:13,fontWeight:700,color:"#fff"}}>{b.customer_name}</span><Badge status={b.status} small/>{b.reminded&&<span style={{fontSize:9,color:"#818cf8"}}>⏰</span>}</div><div style={{fontSize:11,color:"#666680"}}>{b.service} · {b.booking_time} · {b.branch}</div></div><span style={{fontSize:14,fontWeight:800,color:"#c0a062"}}>{b.price}<span style={{fontSize:9}}> ر.س</span></span></div></div>))}
+      </div>)}
+
+      {/* ═══ BULK ═══ */}
+      {tab==="home"&&sub==="bulk"&&(<div style={{padding:"0 16px",animation:"fadeUp 0.3s ease"}}>
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:14}}><span onClick={()=>setSub(null)} style={{fontSize:20,cursor:"pointer",color:"#c0a062"}}>→</span><h2 style={{fontSize:17,fontWeight:800,color:"#fff",margin:0}}>📨 رسائل جماعية</h2></div>
+        <div style={{background:"#131328",borderRadius:14,padding:16,marginBottom:12}}>
+          <div style={{display:"flex",gap:6,marginBottom:12}}>{[["all","الكل",customers.length],["riyadh","الرياض",customers.filter(c=>c.branch==="الرياض").length],["dammam","الدمام",customers.filter(c=>c.branch==="الدمام").length]].map(([v,l,n])=>(<button key={v} className="ch" onClick={()=>setBulkTarget(v)} style={{flex:1,padding:"8px",borderRadius:10,border:"none",background:bulkTarget===v?"linear-gradient(135deg,#c0a062,#8b6914)":"#1a1a30",color:bulkTarget===v?"#fff":"#8b8ba3",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"'Tajawal',sans-serif"}}>{l}<br/><span style={{fontSize:9}}>{n}</span></button>))}</div>
+          <textarea value={bulkMsg} onChange={e=>setBulkMsg(e.target.value)} placeholder="اكتب رسالتك..." rows={3} style={{...inp,direction:"rtl",textAlign:"right",minHeight:80}}/>
+          {bulkProg.on&&<div style={{marginTop:10}}><div style={{height:5,background:"#1a1a30",borderRadius:3,overflow:"hidden"}}><div style={{width:`${(bulkProg.s/bulkProg.t)*100}%`,height:"100%",background:"#34d399",borderRadius:3}}/></div><div style={{fontSize:11,color:"#8b8ba3",marginTop:4,textAlign:"center"}}>{bulkProg.s}/{bulkProg.t}</div></div>}
+          <button className="bt" disabled={!waOk||!bulkMsg.trim()||bulkProg.on} onClick={sendBulk} style={{width:"100%",padding:12,borderRadius:10,border:"none",background:"#25d366",color:"#fff",fontSize:14,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif",marginTop:10,opacity:(!waOk||!bulkMsg.trim())?0.5:1}}>{bulkProg.on?`${bulkProg.s}/${bulkProg.t}`:"💬 إرسال"}</button>
+        </div>
+        <div style={{background:"#131328",borderRadius:14,padding:14}}>
+          <div style={{fontSize:12,fontWeight:700,color:"#fff",marginBottom:8}}>📝 قوالب:</div>
+          {["🔥 خصم 15% على تركيب الشعر هذا الأسبوع!","⭐ أوقات العمل: السبت-الخميس 9ص-9م","🎁 استشارة مجانية عند أول زيارة!"].map((m,i)=>(<div key={i} className="ct" onClick={()=>setBulkMsg(m)} style={{padding:"8px 10px",background:"#1a1a30",borderRadius:8,marginBottom:4,cursor:"pointer",fontSize:11,color:"#8b8ba3"}}>{m}</div>))}
+        </div>
+      </div>)}
+
+      {/* ═══ BOOKINGS ═══ */}
+      {tab==="bookings"&&(<div style={{padding:"0 16px",animation:"fadeUp 0.3s ease"}}>
+        <div style={{position:"relative",marginBottom:10}}><span style={{position:"absolute",right:12,top:"50%",transform:"translateY(-50%)",fontSize:14,color:"#555578"}}>🔍</span><input type="text" placeholder="بحث..." value={search} onChange={e=>setSearch(e.target.value)} style={{...inp,padding:"11px 36px 11px 11px",direction:"rtl",textAlign:"right"}}/></div>
+        <div style={{display:"flex",gap:5,marginBottom:6,overflowX:"auto",paddingBottom:3}}>
+          {["الكل","الرياض","الدمام"].map(b=>(<button key={b} className="ch" onClick={()=>setBranch(b)} style={{padding:"6px 12px",borderRadius:18,border:"none",background:branch===b?"linear-gradient(135deg,#c0a062,#8b6914)":"#1a1a30",color:branch===b?"#fff":"#8b8ba3",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"'Tajawal',sans-serif",whiteSpace:"nowrap"}}>{b}</button>))}
+          <div style={{width:1,background:"#2a2a4a",margin:"0 2px",flexShrink:0}}/>
+          {["الكل","confirmed","pending","cancelled"].map(s=>(<button key={s} className="ch" onClick={()=>setStatusF(s)} style={{padding:"6px 10px",borderRadius:18,border:"none",background:statusF===s?"#2a2a4a":"#1a1a30",color:statusF===s?"#fff":"#8b8ba3",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"'Tajawal',sans-serif",whiteSpace:"nowrap"}}>{s==="الكل"?"الكل":STATUSES[s]}</button>))}
+        </div>
+        <div style={{fontSize:11,color:"#555578",marginBottom:8}}>{filt.length} حجز</div>
+        {pg.map((b,i)=>(<div key={b.id} className="ct" onClick={()=>setSel(b)} style={{background:"#131328",borderRadius:12,padding:"12px 14px",marginBottom:6,cursor:"pointer"}}><div style={{display:"flex",justifyContent:"space-between",marginBottom:6}}><div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}><span style={{fontSize:14,fontWeight:700,color:"#fff"}}>{b.customer_name}</span><Badge status={b.status} small/>{b.notified&&<span style={{fontSize:9,color:"#34d399"}}>✓</span>}{b.reminded&&<span style={{fontSize:9,color:"#818cf8"}}>⏰</span>}</div><span style={{fontSize:10,color:"#555578"}}>#{(b.id||"").toString().slice(-6)}</span></div><div style={{display:"flex",justifyContent:"space-between"}}><span style={{fontSize:11,color:"#8b8ba3"}}>✂️{b.service} · 📍{b.branch}</span><span style={{fontSize:13,fontWeight:800,color:"#c0a062"}}>{b.price}<span style={{fontSize:9}}> ر.س</span></span></div><div style={{fontSize:10,color:"#555578",marginTop:4}}>📅 {b.booking_date} · 🕐 {b.booking_time}</div></div>))}
+        {tPg>1&&<div style={{display:"flex",justifyContent:"center",gap:12,padding:"12px 0"}}><button disabled={page===0} onClick={()=>setPage(p=>p-1)} style={{padding:"8px 16px",borderRadius:8,border:"none",background:page===0?"#131328":"#2a2a4a",color:page===0?"#333":"#fff",fontSize:12,fontWeight:600,cursor:page===0?"default":"pointer",fontFamily:"'Tajawal',sans-serif"}}>←</button><span style={{fontSize:12,color:"#8b8ba3",alignSelf:"center"}}>{page+1}/{tPg}</span><button disabled={page>=tPg-1} onClick={()=>setPage(p=>p+1)} style={{padding:"8px 16px",borderRadius:8,border:"none",background:page>=tPg-1?"#131328":"#2a2a4a",color:page>=tPg-1?"#333":"#fff",fontSize:12,fontWeight:600,cursor:page>=tPg-1?"default":"pointer",fontFamily:"'Tajawal',sans-serif"}}>→</button></div>}
+      </div>)}
+
+      {/* ═══ CUSTOMERS ═══ */}
+      {tab==="customers"&&!selCust&&(<div style={{padding:"0 16px",animation:"fadeUp 0.3s ease"}}>
+        <h2 style={{fontSize:17,fontWeight:800,color:"#fff",margin:"0 0 12px"}}>👥 العملاء ({customers.length})</h2>
+        <div style={{display:"flex",gap:8,marginBottom:14,overflowX:"auto",paddingBottom:4}}>
+          {TIERS.map((t,i)=>{const n=customers.filter(c=>getTier(c.points)===t).length;return(<div key={i} style={{flex:"0 0 auto",minWidth:80,background:t.bg,border:`1px solid ${t.color}22`,borderRadius:12,padding:"10px 12px",textAlign:"center"}}><div style={{fontSize:20}}>{t.icon}</div><div style={{fontSize:10,color:t.color,fontWeight:700,marginTop:2}}>{t.name}</div><div style={{fontSize:18,fontWeight:800,color:"#fff"}}>{n}</div></div>);})}
+        </div>
+        <input placeholder="بحث..." value={search} onChange={e=>setSearch(e.target.value)} style={{...inp,marginBottom:10,direction:"rtl",textAlign:"right"}}/>
+        {customers.filter(c=>!search||c.name.includes(search)||c.phone.includes(search)).map((c,i)=>(<div key={i} className="ct" onClick={()=>setSelCust(c)} style={{background:"#131328",borderRadius:12,padding:"12px 14px",marginBottom:6,cursor:"pointer"}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}><div style={{display:"flex",alignItems:"center",gap:8}}><div style={{width:36,height:36,borderRadius:10,background:c.tier.bg,border:`1px solid ${c.tier.color}33`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:18}}>{c.tier.icon}</div><div><div style={{display:"flex",alignItems:"center",gap:6}}><span style={{fontSize:13,fontWeight:700,color:"#fff"}}>{c.name}</span><span style={{fontSize:9,color:c.tier.color,fontWeight:600,background:c.tier.bg,padding:"1px 6px",borderRadius:8}}>{c.tier.name}</span></div><div style={{fontSize:11,color:"#666680",direction:"ltr",textAlign:"right"}}>{c.phone}</div></div></div><div style={{textAlign:"left"}}><div style={{fontSize:15,fontWeight:800,color:"#c0a062"}}>{c.points}<span style={{fontSize:9,color:"#8b8ba3"}}> نقطة</span></div><div style={{fontSize:9,color:"#666680"}}>{c.visits} زيارة</div></div></div><div style={{height:4,background:"#1a1a30",borderRadius:2,overflow:"hidden"}}><div style={{width:`${getProgress(c.points)}%`,height:"100%",background:`linear-gradient(90deg,${c.tier.color},${c.tier.color}88)`,borderRadius:2}}/></div></div>))}
+      </div>)}
+
+      {/* ═══ Customer Detail + Loyalty ═══ */}
+      {tab==="customers"&&selCust&&(()=>{const nt=getNextTier(selCust.points),pr=getProgress(selCust.points),pn=nt?nt.min-selCust.points:0;return(<div style={{padding:"0 16px",animation:"fadeUp 0.3s ease"}}>
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:14}}><span onClick={()=>setSelCust(null)} style={{fontSize:20,cursor:"pointer",color:"#c0a062"}}>→</span><h2 style={{fontSize:17,fontWeight:800,color:"#fff",margin:0}}>{selCust.name}</h2></div>
+        {/* Loyalty Card */}
+        <div style={{background:`linear-gradient(145deg,${selCust.tier.color}15,#131328)`,borderRadius:16,padding:18,marginBottom:12,border:`1px solid ${selCust.tier.color}22`,position:"relative",overflow:"hidden"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:14}}>
+            <div style={{display:"flex",alignItems:"center",gap:8}}><span style={{fontSize:32}}>{selCust.tier.icon}</span><div><div style={{fontSize:16,fontWeight:800,color:selCust.tier.color}}>{selCust.tier.name}</div><div style={{fontSize:11,color:"#8b8ba3"}}>بطاقة الولاء</div></div></div>
+            <div style={{textAlign:"left"}}><div style={{fontSize:28,fontWeight:900,color:"#fff"}}>{selCust.points}</div><div style={{fontSize:10,color:"#8b8ba3"}}>نقطة</div></div>
+          </div>
+          {nt&&(<div><div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:"#8b8ba3",marginBottom:4}}><span>{selCust.tier.icon} {selCust.tier.name}</span><span>{nt.icon} {nt.name} ({pn} متبقية)</span></div><div style={{height:6,background:"#1a1a30",borderRadius:3,overflow:"hidden"}}><div style={{width:`${pr}%`,height:"100%",background:`linear-gradient(90deg,${selCust.tier.color},${nt.color})`,borderRadius:3}}/></div></div>)}
+          {!nt&&<div style={{fontSize:12,color:selCust.tier.color,textAlign:"center",fontWeight:700}}>🎉 أعلى مستوى!</div>}
+        </div>
+        {/* Stamp Card */}
+        {(()=>{const st=getStamp(selCust.phone);const sc=st.stamps.filter(Boolean).length;return(
+        <div style={{background:"#131328",borderRadius:14,padding:14,marginBottom:10}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}><span style={{fontSize:13,fontWeight:700,color:"#fff"}}>✦ بطاقة الأختام</span><span style={{fontSize:12,fontWeight:800,color:"#c0a062"}}>{sc}/5</span></div>
+          <div style={{display:"flex",justifyContent:"center",gap:8,marginBottom:10}}>
+            {st.stamps.map((s,i)=>(<div key={i} style={{width:36,height:36,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:s?14:10,fontWeight:s?900:400,
+              background:s?(i===4?"linear-gradient(135deg,#ffd700,#c0a062)":"linear-gradient(135deg,#c0a062,#8b7340)"):"#0f0f22",
+              border:s?`2px solid ${i===4?"#ffd700":"#c0a062"}`:"2px dashed #1f1f3a",color:s?"#0b0b18":"#555578"
+            }}>{s?(i===4?"🎁":"✓"):(i===4?"★":(i+1))}</div>))}
+          </div>
+          <div style={{display:"flex",gap:6}}>
+            <button onClick={()=>addStamp(selCust.phone)} style={{flex:1,padding:10,borderRadius:10,border:"none",background:"linear-gradient(135deg,#c0a062,#8b7340)",color:"#0b0b18",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif"}}>✦ إضافة ختم</button>
+            {st.stamps.every(Boolean)&&<button onClick={()=>resetStamp(selCust.phone)} style={{padding:"10px 14px",borderRadius:10,border:"1px solid #1f1f3a",background:"#0f0f22",color:"#666680",fontSize:12,cursor:"pointer"}}>↺</button>}
+          </div>
+          {st.rewards>0&&<div style={{textAlign:"center",marginTop:8,fontSize:11,color:"#c0a062"}}>🎁 هدايا: {st.rewards}</div>}
+        </div>);})()}
+        {/* Info */}
+        <div style={{background:"#131328",borderRadius:14,padding:14,marginBottom:10}}>
+          {[["📱",selCust.phone],["📍",selCust.branch],["🔄",selCust.visits+" زيارة"],["💰",selCust.spent.toLocaleString()+" ر.س"],["📅",selCust.last]].map(([i,v],j)=>(<div key={j} style={{display:"flex",justifyContent:"space-between",padding:"10px 0",borderBottom:j<4?"1px solid #1a1a30":"none"}}><span style={{fontSize:12,color:"#8b8ba3"}}>{i}</span><span style={{fontSize:13,fontWeight:600,color:"#e0e0f0"}}>{v}</span></div>))}
+        </div>
+        {/* Rewards */}
+        <div style={{background:"#131328",borderRadius:14,padding:14,marginBottom:10}}>
+          <div style={{display:"flex",justifyContent:"space-between",marginBottom:10}}><span style={{fontSize:13,fontWeight:700,color:"#fff"}}>🎁 استبدال النقاط</span><span style={{fontSize:12,fontWeight:800,color:"#c0a062"}}>{getAvailPts(selCust)} متاحة</span></div>
+          {REWARDS.map(rw=>{const ok=getAvailPts(selCust)>=rw.points;return(<div key={rw.id} onClick={()=>ok&&setRedeemModal({customer:selCust,reward:rw})} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 12px",background:ok?"#1a1a30":"#0d0d1a",borderRadius:10,marginBottom:6,cursor:ok?"pointer":"default",opacity:ok?1:0.4,border:ok?"1px solid #2a2a4a":"1px solid transparent"}}><div style={{width:36,height:36,borderRadius:10,background:ok?"#c0a06215":"#1a1a30",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20}}>{rw.icon}</div><div style={{flex:1}}><div style={{fontSize:12,fontWeight:700,color:ok?"#fff":"#555"}}>{rw.name}</div><div style={{fontSize:10,color:ok?"#c0a062":"#444"}}>{rw.points} نقطة → {rw.discount} ر.س</div></div><div style={{fontSize:11,fontWeight:700,color:ok?"#34d399":"#555",background:ok?"#0d332033":"transparent",padding:"4px 10px",borderRadius:8}}>{ok?"استبدال":"غير كافٍ"}</div></div>);})}
+        </div>
+        {/* History */}
+        {(redemptions[selCust.phone]||[]).length>0&&(<div style={{background:"#131328",borderRadius:14,padding:14,marginBottom:10}}><div style={{fontSize:13,fontWeight:700,color:"#fff",marginBottom:8}}>📜 سجل الاستبدال</div>{(redemptions[selCust.phone]||[]).map((rd,i)=>(<div key={i} style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:"1px solid #1a1a30"}}><div><div style={{fontSize:12,color:"#e0e0f0"}}>{rd.name}</div><div style={{fontSize:10,color:"#555578"}}>{rd.date}</div></div><div style={{textAlign:"left"}}><div style={{fontSize:11,fontWeight:700,color:"#f87171"}}>-{rd.points}</div><div style={{fontSize:10,color:"#34d399"}}>خصم {rd.discount} ر.س</div></div></div>))}</div>)}
+        <div style={{display:"flex",gap:8}}>
+          <a href={`https://wa.me/966${selCust.phone.slice(1)}`} target="_blank" rel="noreferrer" style={{flex:1,padding:12,borderRadius:10,background:"#25d366",color:"#fff",fontSize:14,fontWeight:700,textAlign:"center",textDecoration:"none",fontFamily:"'Tajawal',sans-serif"}}>💬 واتساب</a>
+          <a href={`tel:${selCust.phone}`} style={{flex:1,padding:12,borderRadius:10,background:"#2a2a4a",color:"#fff",fontSize:14,fontWeight:700,textAlign:"center",textDecoration:"none",fontFamily:"'Tajawal',sans-serif"}}>📞 اتصال</a>
+        </div>
+      </div>);})()}
+
+      {/* ═══ SETTINGS ═══ */}
+      {tab==="settings"&&(<div style={{padding:"0 16px",animation:"fadeUp 0.3s ease"}}>
+        {/* Firebase */}
+        <div style={{background:"#131328",borderRadius:14,padding:16,marginBottom:10}}>
+          <div onClick={()=>setShowFb(!showFb)} className="ct" style={{display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer"}}>
+            <div style={{display:"flex",alignItems:"center",gap:10}}><div style={{width:38,height:38,borderRadius:10,background:"#ff990022",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18}}>🔥</div><div><div style={{fontSize:13,fontWeight:700,color:"#fff"}}>Firebase</div><div style={{fontSize:11,color:fbConnected?"#34d399":"#666680"}}>{fbConnected?"✅ متصل":"أدخل بيانات Firebase"}</div></div></div>
+            <span style={{color:"#555578",transform:showFb?"rotate(90deg)":"none",transition:"0.2s"}}>←</span>
+          </div>
+          {showFb&&(<div style={{marginTop:14,paddingTop:14,borderTop:"1px solid #1a1a30"}}>
+            <div style={{marginBottom:10}}><label style={{fontSize:11,color:"#8b8ba3",marginBottom:4,display:"block"}}>🔑 Firebase API Key</label><input placeholder="AIzaSy..." value={fbApiKey} onChange={e=>setFbApiKey(e.target.value.trim())} style={{...inp,direction:"ltr",textAlign:"left"}}/></div>
+            <div style={{marginBottom:10}}><label style={{fontSize:11,color:"#8b8ba3",marginBottom:4,display:"block"}}>📦 Project ID</label><input placeholder="ebda3-ammar" value={fbProject} onChange={e=>setFbProject(e.target.value.trim())} style={{...inp,direction:"ltr",textAlign:"left"}}/></div>
+            <button className="bt" onClick={connectFb} style={{width:"100%",padding:11,borderRadius:10,border:"none",background:fbConnected?"#34d399":"linear-gradient(135deg,#ff9900,#ff6600)",color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif"}}>{fbConnected?"✅ متصل":"🔥 اتصال بـ Firebase"}</button>
+            <div style={{fontSize:10,color:"#555578",marginTop:6,textAlign:"center"}}>Firebase Console → Project Settings → Web App → Config</div>
+          </div>)}
+        </div>
+
+        {/* WhatsBot */}
+        <div style={{background:"#131328",borderRadius:14,padding:16,marginBottom:10}}>
+          <div onClick={()=>setShowWa(!showWa)} className="ct" style={{display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer"}}>
+            <div style={{display:"flex",alignItems:"center",gap:10}}><div style={{width:38,height:38,borderRadius:10,background:"#25d36622",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18}}>💬</div><div><div style={{fontSize:13,fontWeight:700,color:"#fff"}}>WhatsBot.at</div><div style={{fontSize:11,color:waOk?"#34d399":"#666680"}}>{waOk?"✅ متصل":"أدخل Instance ID"}</div></div></div>
+            <span style={{color:"#555578",transform:showWa?"rotate(90deg)":"none",transition:"0.2s"}}>←</span>
+          </div>
+          {showWa&&(<div style={{marginTop:14,paddingTop:14,borderTop:"1px solid #1a1a30"}}>
+            <div style={{...inp,background:"#0d0d1a",color:"#34d399",fontSize:12,marginBottom:10,direction:"ltr",textAlign:"left"}}>Token: {waToken}</div>
+            <div style={{...inp,background:"#0d0d1a",color:"#34d399",fontSize:12,marginBottom:10,direction:"ltr",textAlign:"left"}}>Instance: {waInst}</div>
+            <button className="bt" onClick={async()=>{setSending(true);try{const r=await fetch("https://whatsbot.at/api/send_pedido",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({number:"966566626652",type:"text",message:"✅ لوحة إبداع عمار متصلة!\n🔥 Firebase + WhatsBot",instance_id:waInst,access_token:waToken})});setToast({msg:r.ok?"تحقق الواتساب ✓":"فشل: "+r.status,type:r.ok?"success":"error"});}catch(e){setToast({msg:e.message,type:"error"});}finally{setSending(false);}}} disabled={sending} style={{width:"100%",padding:11,borderRadius:10,border:"none",background:"#25d366",color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif"}}>🧪 تجربة الإرسال</button>
+          </div>)}
+        </div>
+
+        {/* Notifications */}
+        <div style={{background:"#131328",borderRadius:14,padding:16,marginBottom:10}}>
+          <div style={{fontSize:13,fontWeight:700,color:"#fff",marginBottom:2}}>🔔 إشعارات تلقائية</div>
+          <Toggle label="✅ تأكيد الحجز" value={autoConf} onChange={()=>setAutoConf(!autoConf)}/>
+          <Toggle label="❌ إلغاء الحجز" value={autoCanc} onChange={()=>setAutoCanc(!autoCanc)}/>
+          <Toggle label="⏰ تذكير قبل الموعد" value={autoRem} onChange={()=>setAutoRem(!autoRem)}/>
+          {autoRem&&(<div style={{padding:"12px 0"}}>
+            <div style={{fontSize:12,color:"#8b8ba3",marginBottom:8}}>⏱️ وقت التذكير:</div>
+            <div style={{display:"flex",gap:6}}>{[{v:15,l:"15 د"},{v:30,l:"30 د"},{v:60,l:"ساعة"},{v:120,l:"ساعتين"}].map(t=>(<button key={t.v} className="ch" onClick={()=>setRemMin(t.v)} style={{flex:1,padding:"8px 4px",borderRadius:8,border:"none",background:remMin===t.v?"linear-gradient(135deg,#818cf8,#6366f1)":"#1a1a30",color:remMin===t.v?"#fff":"#8b8ba3",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"'Tajawal',sans-serif"}}>{t.l}</button>))}</div>
+          </div>)}
+        </div>
+      </div>)}
+
+      {/* ═══ STAMPS TAB ═══ */}
+      {tab==="stamps"&&(()=>{
+        const totalSt=Object.values(stampData).reduce((s,x)=>s+x.stamps.filter(Boolean).length+((x.rewards||0)*5),0);
+        const totalRw=Object.values(stampData).reduce((s,x)=>s+(x.rewards||0),0);
+        const custList=Object.values(custMap);
+        const activeCl=custList.filter(c=>{const d=new Date(c.last),n=new Date();return(n-d)/(864e5)<=14;});
+        const inactiveCl=custList.filter(c=>{const d=new Date(c.last),n=new Date();return(n-d)/(864e5)>14;});
+        const bdToday=custList.filter(c=>{if(!c.birthday)return false;const t=new Date(),b=new Date(c.birthday);return b.getMonth()===t.getMonth()&&b.getDate()===t.getDate();});
+        const bdWeek=custList.filter(c=>{if(!c.birthday)return false;const t=new Date(),b=new Date(c.birthday);for(let i=0;i<7;i++){const d=new Date(t);d.setDate(d.getDate()+i);if(b.getMonth()===d.getMonth()&&b.getDate()===d.getDate())return true;}return false;});
+        return(<div style={{padding:"0 16px",animation:"fadeUp 0.3s ease"}}>
+
+        {/* Sub-tabs */}
+        <div style={{display:"flex",gap:4,marginBottom:14,background:"#0f0f22",borderRadius:12,padding:3}}>
+          {[{id:"scan",l:"📷 مسح"},{id:"stats",l:"📊 إحصائيات"},{id:"msg",l:"💬 رسائل"},{id:"list",l:"📋 العملاء"}].map(s=>(
+            <button key={s.id} onClick={()=>setSub(s.id)} style={{flex:1,padding:"8px 4px",borderRadius:10,border:"none",background:(!sub&&s.id==="scan")||(sub===s.id)?"#c0a06222":"transparent",color:(!sub&&s.id==="scan")||(sub===s.id)?"#c0a062":"#555578",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif"}}>{s.l}</button>
+          ))}
+        </div>
+
+        {/* ── SCAN SUB ── */}
+        {(!sub||sub==="scan")&&(<div>
+          <button onClick={()=>{if(scannerOn)stopScanner();else startScanner();}} style={{width:"100%",padding:14,borderRadius:14,border:"none",background:scannerOn?"#3b1118":"linear-gradient(135deg,#c0a062,#8b7340)",color:scannerOn?"#f87171":"#0b0b18",fontSize:15,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif",marginBottom:12}}>{scannerOn?"⏹️ إيقاف الكاميرا":"📷 مسح باركود العميل"}</button>
+          <div id="qr-reader2" style={{display:"none",width:"100%",borderRadius:14,overflow:"hidden",marginBottom:12}}></div>
+          <div style={{display:"flex",alignItems:"center",gap:12,width:"100%",margin:"12px 0"}}><div style={{flex:1,height:1,background:"#1f1f3a"}}/><span style={{fontSize:12,color:"#555578"}}>أو أدخل الرقم</span><div style={{flex:1,height:1,background:"#1f1f3a"}}/></div>
+          <div style={{display:"flex",gap:8,marginBottom:16}}>
+            <input value={scanPhone} onChange={e=>setScanPhone(e.target.value)} placeholder="رقم العميل" dir="ltr" style={{flex:1,padding:"12px 14px",borderRadius:12,border:"1px solid #1f1f3a",background:"#0f0f22",color:"#fff",fontSize:14,fontFamily:"'Tajawal',sans-serif"}}/>
+            <button onClick={()=>{const ph=scanPhone.trim();const c=custMap[ph];if(c){setScanResult2({...c,phone:ph,...getStamp(ph)});
+              if(waOk){const tier2=getTier(calcPts(c.cBks||[]));const sc2=stampCount(ph);const wMsg=sc2===4?`🎁 أهلاً ${c.name}! ختم واحد للهدية!`:`✦ أهلاً ${c.name}! نورت! عندك ${sc2} أختام ${tier2.icon}`;
+              fetch("https://whatsbot.at/api/send_pedido",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({number:fmtPh(ph),type:"text",message:wMsg+"\n💈 إبداع عمار",instance_id:waInst,access_token:waToken})}).catch(()=>{});}
+            }else{setToast({msg:"غير موجود",type:"error"});}}} style={{padding:"12px 20px",borderRadius:12,border:"none",background:"linear-gradient(135deg,#c0a062,#8b7340)",color:"#0b0b18",fontSize:14,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif"}}>بحث</button>
+          </div>
+          {scanResult2&&(()=>{const c=scanResult2;const ph=c.phone;const st=getStamp(ph);const sc=st.stamps.filter(Boolean).length;const tier=getTier(calcPts(c.cBks||[]));const isBD=c.birthday&&(()=>{const t=new Date(),b=new Date(c.birthday);return b.getMonth()===t.getMonth()&&b.getDate()===t.getDate();})();return(
+            <div style={{background:"linear-gradient(135deg,#131328,#0f0f22)",borderRadius:20,padding:20,border:"1px solid #c0a06233",animation:"fadeUp 0.3s ease"}}>
+              {isBD&&<div style={{textAlign:"center",padding:10,borderRadius:12,background:"linear-gradient(135deg,rgba(255,183,77,0.15),rgba(255,152,0,0.08))",border:"1px solid rgba(255,183,77,0.2)",fontSize:14,color:"#FFB74D",fontWeight:600,marginBottom:12}}>🎂 عيد ميلاد سعيد!</div>}
+              <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:16}}>
+                <div style={{width:48,height:48,borderRadius:"50%",background:"linear-gradient(135deg,#c0a062,#8b7340)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,fontWeight:900,color:"#0b0b18"}}>{c.name?.[0]}</div>
+                <div style={{flex:1}}><div style={{fontSize:17,fontWeight:700}}>{c.name}</div><div style={{fontSize:12,color:"#666680",direction:"ltr",textAlign:"right"}}>{ph}</div>
+                {c.birthday&&<div style={{fontSize:11,color:"#666680"}}>🎂 {new Date(c.birthday).toLocaleDateString("ar-SA",{month:"long",day:"numeric"})}</div>}</div>
+                <div style={{padding:"4px 10px",borderRadius:20,border:`1px solid ${tier.color}`,background:tier.bg,fontSize:11,fontWeight:700,color:tier.color}}>{tier.icon} {tier.name}</div>
+              </div>
+              <div style={{display:"flex",justifyContent:"center",gap:10,marginBottom:16}}>
+                {st.stamps.map((s,i)=>{const free=i===4;return(<div key={i} style={{display:"flex",flexDirection:"column",alignItems:"center",gap:4}}>
+                  <div style={{width:50,height:50,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:s?18:12,fontWeight:s?900:400,
+                    background:s?(free?"linear-gradient(135deg,#ffd700,#c0a062)":"linear-gradient(135deg,#c0a062,#8b7340)"):"rgba(255,255,255,0.04)",
+                    border:s?`2px solid ${free?"#ffd700":"#c0a062"}`:free?"2px dashed #c0a06266":"2px dashed #1f1f3a",
+                    color:s?"#0b0b18":free?"#c0a06288":"#555578",boxShadow:s?`0 2px 12px ${free?"rgba(255,215,0,0.3)":"rgba(192,160,98,0.3)"}`:"none"
+                  }}>{s?(free?"🎁":"✓"):(free?"★":(i+1))}</div>
+                  <span style={{fontSize:9,color:free?"#c0a062":"#555578",fontWeight:free?700:400}}>{free?"مجاني":`ختم ${i+1}`}</span>
+                </div>);})}
+              </div>
+              <div style={{height:4,borderRadius:4,background:"#1f1f3a",marginBottom:8,overflow:"hidden"}}><div style={{height:"100%",borderRadius:4,background:"linear-gradient(90deg,#c0a062,#ffd700)",width:`${(sc/5)*100}%`,transition:"width 0.5s"}}/></div>
+              <div style={{textAlign:"center",fontSize:12,color:"#666680",marginBottom:16}}>{sc===5?"🎉 مبروك! استلم هديتك":`باقي ${5-sc} أختام`}</div>
+              <div style={{display:"flex",gap:8}}>
+                <button onClick={()=>addStamp(ph)} style={{flex:1,padding:14,borderRadius:14,border:"none",background:"linear-gradient(135deg,#c0a062,#8b7340)",color:"#0b0b18",fontSize:15,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif"}}>✦ إضافة ختم</button>
+                {st.stamps.every(Boolean)&&<button onClick={()=>resetStamp(ph)} style={{padding:"14px 18px",borderRadius:14,border:"1px solid #1f1f3a",background:"#0f0f22",color:"#666680",fontSize:14,cursor:"pointer"}}>↺</button>}
+                <button onClick={()=>{if(!waOk)return;const msg=`مرحباً ${c.name}! 👋`;fetch("https://whatsbot.at/api/send_pedido",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({number:fmtPh(ph),type:"text",message:msg,instance_id:waInst,access_token:waToken})}).then(()=>setToast({msg:"تم الإرسال ✓",type:"success"}));}} style={{padding:"14px 18px",borderRadius:14,border:"1px solid #25d36633",background:"#25d36611",color:"#34d399",fontSize:16,cursor:"pointer"}}>💬</button>
+              </div>
+              {st.rewards>0&&<div style={{textAlign:"center",marginTop:12,fontSize:12,color:"#c0a062"}}>🎁 هدايا مستلمة: {st.rewards}</div>}
+            </div>
+          );})()}
+          {!scanResult2&&(<div style={{textAlign:"center",padding:"50px 20px",color:"#555578"}}><div style={{fontSize:48,marginBottom:12}}>📷</div><p>امسح باركود العميل أو أدخل رقمه</p></div>)}
+        </div>)}
+
+        {/* ── STATS SUB ── */}
+        {sub==="stats"&&(<div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
+            <div style={{borderRadius:14,padding:14,background:"#c0a06212",border:"1px solid #c0a06222",display:"flex",flexDirection:"column",alignItems:"center",gap:4}}><span style={{fontSize:18}}>✦</span><span style={{fontSize:24,fontWeight:900,color:"#c0a062"}}>{totalSt}</span><span style={{fontSize:11,color:"#666680"}}>إجمالي الأختام</span></div>
+            <div style={{borderRadius:14,padding:14,background:"#9b59b612",border:"1px solid #9b59b622",display:"flex",flexDirection:"column",alignItems:"center",gap:4}}><span style={{fontSize:18}}>🎁</span><span style={{fontSize:24,fontWeight:900,color:"#9b59b6"}}>{totalRw}</span><span style={{fontSize:11,color:"#666680"}}>هدايا مقدمة</span></div>
+            <div style={{borderRadius:14,padding:14,background:"#34d39912",border:"1px solid #34d39922",display:"flex",flexDirection:"column",alignItems:"center",gap:4}}><span style={{fontSize:18}}>🟢</span><span style={{fontSize:24,fontWeight:900,color:"#34d399"}}>{activeCl.length}</span><span style={{fontSize:11,color:"#666680"}}>متواصلين</span></div>
+            <div style={{borderRadius:14,padding:14,background:"#f8717112",border:"1px solid #f8717122",display:"flex",flexDirection:"column",alignItems:"center",gap:4}}><span style={{fontSize:18}}>🔴</span><span style={{fontSize:24,fontWeight:900,color:"#f87171"}}>{inactiveCl.length}</span><span style={{fontSize:11,color:"#666680"}}>منقطعين</span></div>
+          </div>
+          {bdToday.length>0&&(<div style={{borderRadius:14,padding:14,background:"rgba(255,183,77,0.08)",border:"1px solid rgba(255,183,77,0.2)",marginBottom:12}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}><span style={{fontSize:14,fontWeight:700}}>🎂 أعياد ميلاد اليوم!</span>
+            <button onClick={()=>{bdToday.forEach((c,i)=>{setTimeout(()=>{fetch("https://whatsbot.at/api/send_pedido",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({number:fmtPh(c.phone),type:"text",message:`🎂 كل عام وأنت بخير ${c.name}!\nبمناسبة عيد ميلادك نقدم لك خدمة مجانية 🎁\n💈 إبداع عمار`,instance_id:waInst,access_token:waToken})}).catch(()=>{});},i*1500);});setToast({msg:`تم إرسال تهنئة لـ ${bdToday.length} عميل 🎂`,type:"success"});}} style={{padding:"6px 14px",borderRadius:8,border:"none",background:"#FF9800",color:"#fff",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:"'Tajawal',sans-serif"}}>أرسل تهنئة 🎉</button></div>
+            {bdToday.map(c=>(<span key={c.phone} style={{fontSize:12,padding:"4px 10px",borderRadius:8,background:"rgba(255,183,77,0.15)",color:"#FFB74D",display:"inline-block",marginLeft:4,marginBottom:4}}>{c.name} 🎂</span>))}
+          </div>)}
+          {bdWeek.length>0&&!bdToday.length&&(<div style={{borderRadius:14,padding:14,background:"#c0a06208",border:"1px solid #c0a06222",marginBottom:12}}>
+            <div style={{fontSize:14,fontWeight:700,color:"#c0a062",marginBottom:8}}>🎂 أعياد ميلاد هذا الأسبوع</div>
+            {bdWeek.map(c=>(<span key={c.phone} style={{fontSize:12,padding:"4px 10px",borderRadius:8,background:"#c0a06215",color:"#c0a062",display:"inline-block",marginLeft:4,marginBottom:4}}>{c.name}</span>))}
+          </div>)}
+          {inactiveCl.length>0&&(<div style={{borderRadius:14,padding:14,background:"#f8717108",border:"1px solid #f8717122",marginBottom:12}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}><span style={{fontSize:13,color:"rgba(255,255,255,0.7)"}}>⚠️ {inactiveCl.length} عميل منقطع</span>
+            <button onClick={()=>{inactiveCl.forEach((c,i)=>{setTimeout(()=>{fetch("https://whatsbot.at/api/send_pedido",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({number:fmtPh(c.phone),type:"text",message:`مرحباً ${c.name}! 👋\nاشتقنا لك! عُد واحصل على ختم مجاني 🎁\n💈 إبداع عمار`,instance_id:waInst,access_token:waToken})}).catch(()=>{});},i*1500);});setToast({msg:`تم إرسال لـ ${inactiveCl.length} عميل`,type:"success"});}} style={{padding:"6px 14px",borderRadius:8,border:"none",background:"#f87171",color:"#fff",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:"'Tajawal',sans-serif"}}>أرسل رسالة</button></div>
+          </div>)}
+        </div>)}
+
+        {/* ── MSG SUB ── */}
+        {sub==="msg"&&(<div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
+            {[{t:"all",i:"📢",l:"الجميع",n:custList.length},{t:"inactive",i:"🔴",l:"المنقطعين",n:inactiveCl.length},{t:"birthday",i:"🎂",l:"عيد ميلاد",n:bdWeek.length},{t:"active",i:"🟢",l:"المتواصلين",n:activeCl.length}].map(m=>(
+              <button key={m.t} onClick={()=>{setBulkTarget(m.t);setSub("msg-compose");}} style={{display:"flex",flexDirection:"column",alignItems:"center",gap:4,padding:14,borderRadius:14,border:"1px solid #1f1f3a",background:"#0f0f22",cursor:"pointer",fontFamily:"'Tajawal',sans-serif"}}><span style={{fontSize:22}}>{m.i}</span><span style={{fontSize:13,fontWeight:600}}>{m.l}</span><span style={{fontSize:11,color:"#555578"}}>{m.n} عميل</span></button>
+            ))}
+          </div>
+          <div style={{background:"#131328",borderRadius:14,padding:14,border:"1px solid #1f1f3a"}}>
+            <div style={{fontSize:14,fontWeight:700,marginBottom:12}}>📝 قوالب جاهزة</div>
+            {[{t:"ترحيب",m:"مرحباً {name}! 🎉 اجمع ٤ أختام واحصل على الخامس مجاناً 🎁"},{t:"تذكير",m:"{name}، عندك {stamps} أختام! زورنا وأكمل بطاقتك!"},{t:"عيد ميلاد",m:"🎂 كل عام وأنت بخير {name}! هديتك بانتظارك 🎁"},{t:"عرض خاص",m:"🔥 عرض حصري لك {name}! زورنا اليوم!"},{t:"استعادة",m:"اشتقنا لك {name}! 💛 عُد واحصل على ختم مجاني!"}].map((tp,i)=>(
+              <button key={i} onClick={()=>{setBulkMsg(tp.m);setBulkTarget("all");setSub("msg-compose");}} style={{width:"100%",padding:"10px 14px",borderRadius:10,border:"1px solid #1f1f3a",background:"#0f0f2211",marginBottom:4,cursor:"pointer",fontFamily:"'Tajawal',sans-serif",textAlign:"right"}}><span style={{fontSize:13,fontWeight:600,color:"#c0a062"}}>{tp.t}</span></button>
+            ))}
+          </div>
+        </div>)}
+
+        {/* ── MSG COMPOSE ── */}
+        {sub==="msg-compose"&&(<div>
+          <button onClick={()=>setSub("msg")} style={{background:"none",border:"none",color:"#555578",fontSize:13,cursor:"pointer",fontFamily:"'Tajawal',sans-serif",marginBottom:12}}>→ رجوع للرسائل</button>
+          <div style={{marginBottom:12,fontSize:13,color:"#666680"}}>إرسال إلى: <span style={{color:"#c0a062",fontWeight:700}}>{bulkTarget==="all"?"الجميع":bulkTarget==="active"?"المتواصلين":bulkTarget==="inactive"?"المنقطعين":"أعياد الميلاد"}</span></div>
+          <textarea value={bulkMsg} onChange={e=>setBulkMsg(e.target.value)} rows={4} placeholder="اكتب الرسالة... {name} = الاسم" style={{width:"100%",padding:14,borderRadius:12,border:"1px solid #1f1f3a",background:"#0f0f22",color:"#fff",fontSize:14,fontFamily:"'Tajawal',sans-serif",resize:"vertical",lineHeight:1.7,marginBottom:8}}/>
+          <div style={{fontSize:11,color:"#555578",marginBottom:12}}>{"{name}"} = الاسم | {"{stamps}"} = الأختام</div>
+          <button disabled={!waOk||!bulkMsg.trim()||bulkProg.on} onClick={()=>{
+            let tg=bulkTarget==="all"?custList:bulkTarget==="active"?activeCl:bulkTarget==="inactive"?inactiveCl:bdWeek;
+            if(!tg.length){setToast({msg:"لا يوجد عملاء",type:"error"});return;}
+            let s=0;tg.forEach((c,i)=>{setTimeout(async()=>{try{await fetch("https://whatsbot.at/api/send_pedido",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({number:fmtPh(c.phone),type:"text",message:`💈 إبداع عمار\n\n${bulkMsg.replace(/{name}/g,c.name).replace(/{stamps}/g,stampCount(c.phone))}`,instance_id:waInst,access_token:waToken})});s++;}catch{}setBulkProg({s,t:tg.length,on:true});if(s===tg.length){setBulkProg({s:0,t:0,on:false});setToast({msg:`تم إرسال لـ ${s} عميل ✓`,type:"success"});}},i*1500);});
+          }} style={{width:"100%",padding:14,borderRadius:14,border:"none",background:"#25d366",color:"#fff",fontSize:15,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif",opacity:(!waOk||!bulkMsg.trim())?0.5:1}}>{bulkProg.on?`${bulkProg.s}/${bulkProg.t}`:"💬 إرسال واتساب"}</button>
+        </div>)}
+
+        {/* ── LIST SUB ── */}
+        {sub==="list"&&(<div>
+          <div style={{fontSize:14,fontWeight:700,marginBottom:12}}>📋 أختام العملاء</div>
+          {custList.length===0?(<div style={{textAlign:"center",padding:30,color:"#555578"}}>لا يوجد عملاء</div>):
+          custList.map(c=>{const st=getStamp(c.phone);const sc=st.stamps.filter(Boolean).length;return(
+            <div key={c.phone} onClick={()=>{setScanResult2({...c,...st});setSub("scan");}} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 12px",borderRadius:12,background:"#0f0f22",border:"1px solid #1f1f3a",marginBottom:6,cursor:"pointer"}}>
+              <div style={{width:32,height:32,borderRadius:"50%",background:sc>0?"#c0a062":"#1f1f3a",display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,fontWeight:900,color:sc>0?"#0b0b18":"#555578"}}>{c.name?.[0]}</div>
+              <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600}}>{c.name}</div><div style={{fontSize:10,color:"#555578"}}>{c.phone}</div></div>
+              <div style={{display:"flex",gap:3}}>{st.stamps.map((s,i)=>(<div key={i} style={{width:8,height:8,borderRadius:"50%",background:s?"#c0a062":"#1f1f3a"}}/>))}</div>
+              <span style={{fontSize:11,color:"#c0a062",fontWeight:700}}>{sc}/5</span>
+            </div>
+          );})}
+        </div>)}
+
+      </div>);})()}
+
+      {/* ═══ TEAM TAB ═══ */}
+      {tab==="team"&&!currentEmp&&(<div style={{padding:"0 16px",animation:"fadeUp 0.3s ease"}}>
+        <div style={{fontSize:18,fontWeight:800,color:"#c0a062",marginBottom:16}}>🧑‍💼 إدارة الفريق</div>
+        <div style={{background:"#131328",borderRadius:16,padding:16,border:"1px solid #1f1f3a",marginBottom:12}}>
+          <div style={{fontSize:14,fontWeight:700,color:"#fff",marginBottom:12}}>➕ إضافة موظف</div>
+          <input value={newEmpName} onChange={e=>setNewEmpName(e.target.value)} placeholder="اسم الموظف" style={{width:"100%",padding:12,borderRadius:10,border:"1px solid #1f1f3a",background:"#0f0f22",color:"#fff",fontSize:14,fontFamily:"'Tajawal',sans-serif",marginBottom:8}}/>
+          <input type="password" value={newEmpPin} onChange={e=>setNewEmpPin(e.target.value)} placeholder="رمز الدخول" dir="ltr" maxLength={6} style={{width:"100%",padding:12,borderRadius:10,border:"1px solid #1f1f3a",background:"#0f0f22",color:"#fff",fontSize:14,fontFamily:"'Tajawal',sans-serif",marginBottom:8}}/>
+          <div style={{display:"flex",gap:6,marginBottom:12}}>
+            {["الرياض","الدمام","ترك الرياض"].map(b=>(<button key={b} onClick={()=>setNewEmpBranch(b)} style={{flex:1,padding:"8px 4px",borderRadius:8,border:"none",background:newEmpBranch===b?"#c0a06233":"#0f0f22",color:newEmpBranch===b?"#c0a062":"#666680",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:"'Tajawal',sans-serif"}}>{b}</button>))}
+          </div>
+          <button onClick={()=>{if(!newEmpName.trim()||!newEmpPin){setToast({msg:"أدخل البيانات",type:"error"});return;}const id="emp_"+Date.now();const upd={...employees,[id]:{id,name:newEmpName.trim(),pin:newEmpPin,branch:newEmpBranch}};saveEmps(upd);setToast({msg:"تم إضافة "+newEmpName+" ✓",type:"success"});setNewEmpName("");setNewEmpPin("");}} style={{width:"100%",padding:12,borderRadius:10,border:"none",background:"linear-gradient(135deg,#c0a062,#8b7340)",color:"#0b0b18",fontSize:14,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif"}}>➕ إضافة</button>
+        </div>
+        <div style={{background:"#131328",borderRadius:16,padding:16,border:"1px solid #1f1f3a"}}>
+          <div style={{fontSize:14,fontWeight:700,color:"#fff",marginBottom:12}}>👥 الموظفين ({Object.keys(employees).length})</div>
+          {Object.values(employees).length===0?(<div style={{textAlign:"center",padding:20,color:"#555578"}}>لا يوجد موظفين</div>):
+          Object.values(employees).map(e=>(<div key={e.id} style={{display:"flex",alignItems:"center",gap:10,padding:"12px 0",borderBottom:"1px solid #1f1f3a"}}>
+            <div style={{width:36,height:36,borderRadius:"50%",background:"#c0a062",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,fontWeight:900,color:"#0b0b18"}}>{e.name[0]}</div>
+            <div style={{flex:1}}><div style={{fontSize:14,fontWeight:600}}>{e.name}</div><div style={{fontSize:11,color:"#666680"}}>📍 {e.branch} | مسح + ختم</div></div>
+            <button onClick={()=>{const upd={...employees};delete upd[e.id];saveEmps(upd);setToast({msg:"تم الحذف",type:"success"});}} style={{padding:"4px 10px",borderRadius:8,border:"1px solid #3b111833",background:"#3b111833",color:"#f87171",fontSize:12,cursor:"pointer",fontFamily:"'Tajawal',sans-serif"}}>حذف</button>
+          </div>))}
+        </div>
+      </div>)}
+
+      {/* ═══ Nav ═══ */}
+      <div style={{position:"fixed",bottom:0,left:"50%",transform:"translateX(-50%)",width:"100%",maxWidth:480,background:"linear-gradient(180deg,rgba(11,11,24,0.97),#0b0b18)",borderTop:"1px solid #1f1f3a",display:"flex",justifyContent:"space-around",padding:"6px 0 10px",zIndex:50}}>
+        {[{id:"home",i:"🏠",l:"الرئيسية"},{id:"bookings",i:"📋",l:"الحجوزات"},{id:"stamps",i:"✦",l:"الأختام"},{id:"customers",i:"👥",l:"العملاء"},{id:"team",i:"🧑‍💼",l:"الفريق"},{id:"settings",i:"⚙️",l:"الإعدادات"}].filter(x=>!currentEmp||x.id==="stamps").map(x=>(<div key={x.id} onClick={()=>{setTab(x.id);setSub(null);setSelCust(null);stopScanner();}} style={{display:"flex",flexDirection:"column",alignItems:"center",gap:1,cursor:"pointer",padding:"4px 10px"}}><span style={{fontSize:20,filter:tab===x.id?"none":"grayscale(1) opacity(0.5)"}}>{x.i}</span><span style={{fontSize:9,fontWeight:tab===x.id?700:400,color:tab===x.id?"#c0a062":"#555578"}}>{x.l}</span>{tab===x.id&&<div style={{width:4,height:4,borderRadius:"50%",background:"#c0a062"}}/>}</div>))}
+      </div>
+
+      {/* ═══ Booking Sheet ═══ */}
+      {sel&&(<div onClick={()=>setSel(null)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.75)",display:"flex",alignItems:"flex-end",justifyContent:"center",zIndex:100}}>
+        <div onClick={e=>e.stopPropagation()} style={{background:"#131328",borderRadius:"20px 20px 0 0",padding:"8px 20px 28px",width:"100%",maxWidth:480,maxHeight:"85vh",overflowY:"auto",animation:"fadeUp 0.3s ease"}}>
+          <div style={{display:"flex",justifyContent:"center",padding:"6px 0 12px"}}><div style={{width:32,height:4,borderRadius:2,background:"#2a2a4a"}}/></div>
+          <div style={{display:"flex",justifyContent:"space-between",marginBottom:14}}><h3 style={{fontSize:17,fontWeight:800,color:"#fff",margin:0}}>حجز #{(sel.id||"").toString().slice(-6)}</h3><Badge status={sel.status}/></div>
+          {[["👤",sel.customer_name],["📱",sel.customer_phone],["🏢",sel.branch],["✂️",sel.service],["💰",`${sel.price} ر.س`],["📅",sel.booking_date],["🕐",sel.booking_time],["💳",sel.payment_method]].map(([i,v],j)=>(<div key={j} style={{display:"flex",justifyContent:"space-between",padding:"9px 0",borderBottom:j<7?"1px solid #1a1a30":"none"}}><span style={{fontSize:12,color:"#8b8ba3"}}>{i}</span><span style={{fontSize:13,fontWeight:600,color:"#e0e0f0"}}>{v}</span></div>))}
+          <div style={{display:"flex",gap:6,marginTop:12}}>
+            {sel.status!=="confirmed"&&<button className="bt" onClick={()=>updSt(sel,"confirmed")} style={{flex:1,padding:9,borderRadius:9,border:"none",background:"#0d3320",color:"#34d399",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif"}}>✅ تأكيد</button>}
+            {sel.status!=="cancelled"&&<button className="bt" onClick={()=>updSt(sel,"cancelled")} style={{flex:1,padding:9,borderRadius:9,border:"none",background:"#3b1118",color:"#f87171",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif"}}>❌ إلغاء</button>}
+          </div>
+          <div style={{fontSize:11,fontWeight:700,color:"#8b8ba3",marginTop:10,marginBottom:6}}>📨 إشعار واتساب:</div>
+          <div style={{display:"flex",gap:5}}>
+            <button className="bt" disabled={sending} onClick={()=>sendWA(sel,"confirmation")} style={{flex:1,padding:9,borderRadius:9,border:"none",background:"#0d3320",color:"#34d399",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif",opacity:sending?0.5:1}}>✅</button>
+            <button className="bt" disabled={sending} onClick={()=>sendWA(sel,"reminder")} style={{flex:1,padding:9,borderRadius:9,border:"none",background:"#3b2f0a",color:"#fbbf24",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif",opacity:sending?0.5:1}}>⏰</button>
+            <button className="bt" onClick={()=>{setCancelModal(sel);setCancelReason("");}} style={{flex:1,padding:9,borderRadius:9,border:"none",background:"#3b1118",color:"#f87171",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif"}}>❌+سبب</button>
+          </div>
+          <div style={{display:"flex",gap:8,marginTop:12}}>
+            <a href={`https://wa.me/966${sel.customer_phone?.slice(1)}`} target="_blank" rel="noreferrer" style={{flex:1,padding:12,borderRadius:10,background:"#25d366",color:"#fff",fontSize:14,fontWeight:700,textAlign:"center",textDecoration:"none",fontFamily:"'Tajawal',sans-serif"}}>💬 واتساب</a>
+            <a href={`tel:${sel.customer_phone}`} style={{flex:1,padding:12,borderRadius:10,background:"#2a2a4a",color:"#fff",fontSize:14,fontWeight:700,textAlign:"center",textDecoration:"none",fontFamily:"'Tajawal',sans-serif"}}>📞 اتصال</a>
+          </div>
+        </div>
+      </div>)}
+
+      {/* ═══ Cancel Modal ═══ */}
+      {cancelModal&&(<div onClick={()=>{setCancelModal(null);setCancelReason("");}} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.8)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:150,backdropFilter:"blur(6px)"}}>
+        <div onClick={e=>e.stopPropagation()} style={{background:"#131328",borderRadius:20,padding:"24px 20px",width:"92%",maxWidth:400,animation:"fadeUp 0.3s ease",border:"1px solid #3b1118"}}>
+          <div style={{textAlign:"center",marginBottom:20}}><div style={{width:56,height:56,borderRadius:16,background:"#3b111844",margin:"0 auto 12px",display:"flex",alignItems:"center",justifyContent:"center",fontSize:28}}>❌</div><h3 style={{fontSize:18,fontWeight:800,color:"#fff",margin:"0 0 4px"}}>إلغاء الحجز</h3><p style={{fontSize:13,color:"#8b8ba3",margin:0}}>{cancelModal.customer_name}</p></div>
+          <div style={{fontSize:12,fontWeight:700,color:"#e0e0f0",marginBottom:8}}>📌 اختر السبب:</div>
+          <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:12}}>{CANCEL_REASONS.map((r,i)=>(<button key={i} className="ch" onClick={()=>setCancelReason(r)} style={{padding:"7px 12px",borderRadius:20,border:cancelReason===r?"1px solid #f8717155":"1px solid transparent",background:cancelReason===r?"#f8717133":"#1a1a30",color:cancelReason===r?"#f87171":"#8b8ba3",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"'Tajawal',sans-serif"}}>{r}</button>))}</div>
+          <div style={{fontSize:12,fontWeight:700,color:"#e0e0f0",marginBottom:6}}>✏️ أو اكتب:</div>
+          <textarea value={cancelReason} onChange={e=>setCancelReason(e.target.value)} placeholder="سبب الإلغاء..." rows={3} style={{...inp,direction:"rtl",textAlign:"right",minHeight:70,marginBottom:14}}/>
+          {cancelReason&&(<div style={{background:"#0d0d1a",borderRadius:10,padding:"10px 12px",marginBottom:14,borderRight:"3px solid #f87171"}}><div style={{fontSize:10,color:"#f87171",fontWeight:700,marginBottom:6}}>معاينة:</div><div style={{fontSize:11,color:"#8b8ba3",lineHeight:1.6,whiteSpace:"pre-line"}}>{"❌ إلغاء حجز\nمرحباً "+cancelModal.customer_name+",\n📌 السبب: "+cancelReason+"\nيمكنك إعادة الحجز 🙏"}</div></div>)}
+          <div style={{display:"flex",gap:10}}>
+            <button className="bt" onClick={()=>{setCancelModal(null);setCancelReason("");}} style={{flex:1,padding:13,borderRadius:12,border:"1px solid #2a2a4a",background:"transparent",color:"#8b8ba3",fontSize:14,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif"}}>تراجع</button>
+            <button className="bt" disabled={!cancelReason.trim()||sending} onClick={confirmCancel} style={{flex:1,padding:13,borderRadius:12,border:"none",background:!cancelReason.trim()?"#2a2a4a":"linear-gradient(135deg,#ef4444,#dc2626)",color:"#fff",fontSize:14,fontWeight:700,cursor:(!cancelReason.trim()||sending)?"default":"pointer",fontFamily:"'Tajawal',sans-serif",opacity:(!cancelReason.trim()||sending)?0.5:1}}>{sending?"⏳":"❌ تأكيد الإلغاء"}</button>
+          </div>
+        </div>
+      </div>)}
+
+      {/* ═══ Redeem Modal ═══ */}
+      {redeemModal&&(<div onClick={()=>setRedeemModal(null)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.8)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:160}}>
+        <div onClick={e=>e.stopPropagation()} style={{background:"#131328",borderRadius:20,padding:"24px 20px",width:"92%",maxWidth:400,animation:"fadeUp 0.3s ease",border:"1px solid #c0a06233"}}>
+          <div style={{textAlign:"center",marginBottom:18}}><div style={{width:60,height:60,borderRadius:16,background:"#c0a06215",margin:"0 auto 12px",display:"flex",alignItems:"center",justifyContent:"center",fontSize:32}}>{redeemModal.reward.icon}</div><h3 style={{fontSize:18,fontWeight:800,color:"#fff",margin:"0 0 6px"}}>تأكيد الاستبدال</h3><p style={{fontSize:13,color:"#8b8ba3",margin:0}}>{redeemModal.customer.name}</p></div>
+          <div style={{background:"#1a1a30",borderRadius:12,padding:14,marginBottom:16}}>{[["🎁",redeemModal.reward.name],["⭐",redeemModal.reward.points+" نقطة"],["💰","خصم "+redeemModal.reward.discount+" ر.س"],["📊",(getAvailPts(redeemModal.customer)-redeemModal.reward.points)+" متبقي"]].map(([i,v],j)=>(<div key={j} style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:j<3?"1px solid #2a2a4a":"none"}}><span style={{fontSize:12,color:"#8b8ba3"}}>{i}</span><span style={{fontSize:13,fontWeight:700,color:"#fff"}}>{v}</span></div>))}</div>
+          <div style={{display:"flex",gap:10}}>
+            <button className="bt" onClick={()=>setRedeemModal(null)} style={{flex:1,padding:13,borderRadius:12,border:"1px solid #2a2a4a",background:"transparent",color:"#8b8ba3",fontSize:14,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif"}}>إلغاء</button>
+            <button className="bt" onClick={confirmRedeem} style={{flex:1,padding:13,borderRadius:12,border:"none",background:"linear-gradient(135deg,#c0a062,#8b6914)",color:"#fff",fontSize:14,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif"}}>🎁 تأكيد</button>
+          </div>
+        </div>
+      </div>)}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(App));
+</script>
+</body>
+</html>
