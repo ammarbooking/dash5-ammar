@@ -201,10 +201,11 @@ function App() {
   const [loading,setLoading] = useState(false);
 
   // Supabase config
-  const [sbUrl,setSbUrl] = useState("");
-  const [sbAnonKey,setSbAnonKey] = useState("");
+  const [sbUrl,setSbUrl] = useState("https://vmbaxqghabxzvkcwxjdy.supabase.co");
+  const [sbAnonKey,setSbAnonKey] = useState("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZtYmF4cWdoYWJ4enZrY3h3amR5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQxODI3NzQsImV4cCI6MjA4OTc1ODc3NH0.HGpFOtSqhhrn-kNQZU0IDVY7j6lzMkSNL2Z8_fLRbSY");
   const [dbConnected,setDbConnected] = useState(false);
   const [showDb,setShowDb] = useState(false);
+  const [customersDb, setCustomersDb] = useState([]);
 
   // WhatsBot
   const [waToken] = useState("669c3f9310ef5");
@@ -241,26 +242,81 @@ function App() {
   const [scannerOn,setScannerOn] = useState(false);
   const scanRef = useRef(null);
 
-  const getStamp = ph => stampData[ph] || {stamps:[false,false,false,false,false],rewards:0};
+  const getStamp = ph => {
+    const c = customersDb.find(x => x.phone === ph);
+    return {
+      stamps: Array.isArray(c?.stamps) ? c.stamps : [false,false,false,false,false],
+      rewards: Number(c?.total_rewards || 0)
+    };
+  };
   const stampCount = ph => getStamp(ph).stamps.filter(Boolean).length;
 
   const addStamp = async(ph) => {
-    const c = custMap[ph] || customers.find(x=>x.phone===ph);
+    const c = customers.find(x=>x.phone===ph);
     if(!c) { setToast({msg:"العميل غير موجود",type:"error"}); return; }
+
+    const row = customersDb.find(x=>x.phone===ph);
+    if(!row?.id){ setToast({msg:"بيانات الولاء غير موجودة",type:"error"}); return; }
+
     const st = getStamp(ph);
-    const ni = st.stamps.findIndex(s=>!s);
+    const nextStamps = [...st.stamps];
+    const ni = nextStamps.findIndex(s=>!s);
     if(ni===-1){setToast({msg:"البطاقة مكتملة! اضغط إعادة تعيين",type:"error"});return;}
-    st.stamps[ni]=true;
+
+    nextStamps[ni] = true;
+    let totalRewards = st.rewards || 0;
     let msg;
-    if(ni<4) msg=`✦ مرحباً ${c.name}!\nتم إضافة ختم ${ni+1}/٥ 🎉\nباقي ${4-ni} للهدية! 🎁\n💈 إبداع عمار`;
-    else { st.rewards=(st.rewards||0)+1; msg=`🎉 مبروك ${c.name}!\nأكملت ٥ أختام!\nطلبك المجاني بانتظارك 🎁\n💈 إبداع عمار`; }
-    const upd={...stampData,[ph]:st};saveStamps(upd);
-    setScanResult2({...c,phone:ph,...getStamp(ph)});
+
+    if(ni<4) msg=`✦ مرحباً ${c.name}!
+تم إضافة ختم ${ni+1}/٥ 🎉
+باقي ${4-ni} للهدية! 🎁
+💈 إبداع عمار`;
+    else { totalRewards += 1; msg=`🎉 مبروك ${c.name}!
+أكملت ٥ أختام!
+طلبك المجاني بانتظارك 🎁
+💈 إبداع عمار`; }
+
+    const ok = await db.update("customers", row.id, {
+      stamps: nextStamps,
+      total_rewards: totalRewards,
+      updated_at: new Date().toISOString()
+    });
+
+    if(!ok){ setToast({msg:"فشل حفظ الختم في الداتابيز",type:"error"}); return; }
+
+    await loadCustomers();
+    setScanResult2({...c,phone:ph,stamps:nextStamps,rewards:totalRewards});
     setToast({msg:`تم إضافة ختم لـ ${c.name} ✓`,type:"success"});
+
     if(waOk){try{await fetch("https://whatsbot.at/api/send_pedido",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({number:fmtPh(ph),type:"text",message:msg,instance_id:waInst,access_token:waToken})});}catch{}}
-    if(ni===4){setTimeout(()=>{st.stamps=[false,false,false,false,false];saveStamps({...stampData,[ph]:st});setScanResult2(prev=>({...prev,stamps:st.stamps}));setToast({msg:"تم إعادة تعيين البطاقة تلقائياً ♻️",type:"info"});},3000);}
+
+    if(ni===4){
+      setTimeout(async()=>{
+        const resetOk = await db.update("customers", row.id, {
+          stamps:[false,false,false,false,false],
+          total_rewards: totalRewards,
+          updated_at:new Date().toISOString()
+        });
+        if(resetOk){
+          await loadCustomers();
+          setScanResult2(prev=>prev?{...prev,stamps:[false,false,false,false,false],rewards:totalRewards}:null);
+          setToast({msg:"تم إعادة تعيين البطاقة تلقائياً ♻️",type:"info"});
+        }
+      },3000);
+    }
   };
-  const resetStamp = ph=>{const st=getStamp(ph);st.stamps=[false,false,false,false,false];saveStamps({...stampData,[ph]:st});setScanResult2(prev=>prev?{...prev,stamps:st.stamps}:null);setToast({msg:"تم إعادة التعيين",type:"success"})};
+  const resetStamp = async(ph)=>{
+    const row = customersDb.find(x => x.phone === ph);
+    if(!row?.id){setToast({msg:"العميل غير موجود",type:"error"});return;}
+    const ok = await db.update("customers", row.id, {
+      stamps:[false,false,false,false,false],
+      updated_at:new Date().toISOString()
+    });
+    if(!ok){setToast({msg:"فشل إعادة التعيين",type:"error"});return;}
+    await loadCustomers();
+    setScanResult2(prev=>prev?{...prev,stamps:[false,false,false,false,false]}:null);
+    setToast({msg:"تم إعادة التعيين",type:"success"})
+  };
 
   // QR Scanner
   const startScanner = ()=>{
@@ -291,6 +347,12 @@ function App() {
   const perPage = 10;
 
   // ═══ Connect Supabase ═══
+  const loadCustomers = useCallback(async()=>{
+    if(!supabaseClient) return;
+    const rows = await db.getAll("customers", "created_at", "desc");
+    setCustomersDb(rows || []);
+  },[]);
+
   const connectDb = async () => {
     if (!sbUrl || !sbAnonKey) {
       setToast({msg:"أدخل Supabase URL و Anon Key",type:"error"});
@@ -304,7 +366,6 @@ function App() {
     }
 
     setDbConnected(true);
-    setToast({msg:"✅ تم الاتصال بـ Supabase بنجاح!",type:"success"});
 
     const data = await db.getAll("bookings", "booking_date", "desc");
     if (data.length) {
@@ -315,19 +376,25 @@ function App() {
       })));
     }
 
+    await loadCustomers();
+
     db.onBookingsSnapshot((rows) => {
       if (rows.length) setBookings(rows);
+      else setBookings([]);
     });
   };
+
+  useEffect(()=>{ connectDb(); },[]);
 
   // Load bookings
   const loadBookings = useCallback(async()=>{
     if(!dbConnected) return;
     setLoading(true);
     const data = await db.getAll("bookings","booking_date","desc");
-    if(data.length) setBookings(data);
+    setBookings(data.length ? data : []);
+    await loadCustomers();
     setLoading(false);
-  },[dbConnected]);
+  },[dbConnected, loadCustomers]);
 
   // Derived data
   const todayBk = bookings.filter(b=>b.booking_date===today);
@@ -337,7 +404,43 @@ function App() {
 
   // Customers
   const custMap = {};
-  bookings.forEach(b=>{const p=b.customer_phone;if(!custMap[p])custMap[p]={name:b.customer_name,phone:p,branch:b.branch,visits:0,spent:0,last:b.booking_date,svcs:[],cBks:[]};custMap[p].visits++;if(b.status==="confirmed"){custMap[p].spent+=b.price;custMap[p].cBks.push(b);}if(b.booking_date>custMap[p].last)custMap[p].last=b.booking_date;if(!custMap[p].svcs.includes(b.service))custMap[p].svcs.push(b.service);});
+  bookings.forEach(b=>{
+    const p=b.customer_phone;
+    if(!p) return;
+    if(!custMap[p]){
+      const dbCust = customersDb.find(x=>x.phone===p) || {};
+      custMap[p]={
+        id: dbCust.id,
+        name:dbCust.name||b.customer_name,
+        phone:p,
+        branch:dbCust.branch||b.branch,
+        birthday:dbCust.birthday||null,
+        stamps:Array.isArray(dbCust.stamps)?dbCust.stamps:[false,false,false,false,false],
+        total_rewards:Number(dbCust.total_rewards||0),
+        referral_code:dbCust.referral_code||"",
+        visits:0,spent:0,last:b.booking_date,svcs:[],cBks:[]
+      };
+    }
+    custMap[p].visits++;
+    if(b.status==="confirmed"){custMap[p].spent+=Number(b.price||0);custMap[p].cBks.push(b);}
+    if(b.booking_date>custMap[p].last)custMap[p].last=b.booking_date;
+    if(!custMap[p].svcs.includes(b.service))custMap[p].svcs.push(b.service);
+  });
+  customersDb.forEach(c=>{
+    if(!custMap[c.phone]){
+      custMap[c.phone]={
+        id:c.id,
+        name:c.name||"",
+        phone:c.phone,
+        branch:c.branch||"",
+        birthday:c.birthday||null,
+        stamps:Array.isArray(c.stamps)?c.stamps:[false,false,false,false,false],
+        total_rewards:Number(c.total_rewards||0),
+        referral_code:c.referral_code||"",
+        visits:0,spent:0,last:"",svcs:[],cBks:[]
+      };
+    }
+  });
   const customers = Object.values(custMap).map(c=>({...c,points:calcPts(c.cBks),tier:getTier(calcPts(c.cBks))})).sort((a,b)=>b.points-a.points);
 
   const filt = bookings.filter(b=>{
