@@ -482,6 +482,21 @@ function App() {
   const filteredConfirmed = filt.filter(b=>b.status==="confirmed");
   const filteredCancelled = filt.filter(b=>b.status==="cancelled");
   const filteredRevenue = filteredConfirmed.reduce((sum,b)=>sum+Number(b.price||0),0);
+  const sortedByTime = [...filt].sort((a,b)=>{
+    const ta = a.booking_time || "";
+    const tb = b.booking_time || "";
+    return ta.localeCompare(tb);
+  });
+  const firstBookingTime = sortedByTime.length ? sortedByTime[0].booking_time : "--";
+  const lastBookingTime = sortedByTime.length ? sortedByTime[sortedByTime.length - 1].booking_time : "--";
+  const serviceCounts = filt.reduce((acc,b)=>{
+    const service = b.service || "غير محدد";
+    acc[service] = (acc[service] || 0) + 1;
+    return acc;
+  },{});
+  const topService = Object.keys(serviceCounts).length
+    ? Object.entries(serviceCounts).sort((a,b)=>b[1]-a[1])[0][0]
+    : "--";
   const pg = filt.slice(page*perPage,(page+1)*perPage);
   const tPg = Math.ceil(filt.length/perPage);
   useEffect(()=>setPage(0),[branch,search,statusF,selectedDate]);
@@ -677,6 +692,23 @@ function App() {
           <div style={{background:"#131328",borderRadius:12,padding:"12px",borderRight:"3px solid #c0a062"}}>
             <div style={{fontSize:10,color:"#8b8ba3",marginBottom:4}}>إجمالي الإيراد</div>
             <div style={{fontSize:22,fontWeight:800,color:"#c0a062"}}>{filteredRevenue}<span style={{fontSize:10}}> ر.س</span></div>
+          </div>
+        </div>
+        <div style={{background:"#131328",borderRadius:12,padding:"12px",marginBottom:10,borderRight:"3px solid #818cf8"}}>
+          <div style={{fontSize:12,fontWeight:700,color:"#fff",marginBottom:10}}>📅 ملخص اليوم</div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>
+            <div style={{background:"#1a1a30",borderRadius:10,padding:"10px",textAlign:"center"}}>
+              <div style={{fontSize:10,color:"#8b8ba3",marginBottom:4}}>أول حجز</div>
+              <div style={{fontSize:16,fontWeight:800,color:"#60a5fa"}}>{firstBookingTime}</div>
+            </div>
+            <div style={{background:"#1a1a30",borderRadius:10,padding:"10px",textAlign:"center"}}>
+              <div style={{fontSize:10,color:"#8b8ba3",marginBottom:4}}>آخر حجز</div>
+              <div style={{fontSize:16,fontWeight:800,color:"#f59e0b"}}>{lastBookingTime}</div>
+            </div>
+            <div style={{background:"#1a1a30",borderRadius:10,padding:"10px",textAlign:"center"}}>
+              <div style={{fontSize:10,color:"#8b8ba3",marginBottom:4}}>أكثر خدمة</div>
+              <div style={{fontSize:14,fontWeight:800,color:"#34d399"}}>{topService}</div>
+            </div>
           </div>
         </div>
         <div style={{display:"flex",gap:5,marginBottom:6,overflowX:"auto",paddingBottom:3}}>
