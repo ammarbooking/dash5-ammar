@@ -213,9 +213,9 @@ function App() {
   const [sel,setSel] = useState(null);
   const [selCust,setSelCust] = useState(null);
   const [search,setSearch] = useState("");
+  const [selectedDate,setSelectedDate] = useState("");
   const [branch,setBranch] = useState("الكل");
   const [statusF,setStatusF] = useState("الكل");
-  const [selectedDate,setSelectedDate] = useState("");
   const [page,setPage] = useState(0);
   const [toast,setToast] = useState(null);
   const [sending,setSending] = useState(false);
@@ -365,11 +365,7 @@ function App() {
   const [newEmpBranch,setNewEmpBranch] = useState("الرياض");
 
   const waOk = waToken && waInst;
-  const todayDate = new Date();
-  const today = todayDate.toISOString().split("T")[0];
-  const yesterdayDate = new Date(todayDate);
-  yesterdayDate.setDate(yesterdayDate.getDate()-1);
-  const yesterday = yesterdayDate.toISOString().split("T")[0];
+  const today = new Date().toISOString().split("T")[0];
   const perPage = 10;
 
   // ═══ Connect Supabase ═══
@@ -476,15 +472,16 @@ function App() {
   const filt = bookings.filter(b=>{
     if(branch!=="الكل"&&b.branch!==branch)return false;
     if(statusF!=="الكل"&&b.status!==statusF)return false;
-
     if(selectedDate){
       const bookingDate = new Date(b.booking_date).toISOString().split("T")[0];
-      if(bookingDate !== selectedDate) return false;
+      if(bookingDate!==selectedDate)return false;
     }
-
     if(search&&!b.customer_name?.includes(search)&&!b.customer_phone?.includes(search)&&!String(b.id).includes(search))return false;
     return true;
   });
+  const filteredConfirmed = filt.filter(b=>b.status==="confirmed");
+  const filteredCancelled = filt.filter(b=>b.status==="cancelled");
+  const filteredRevenue = filteredConfirmed.reduce((sum,b)=>sum+Number(b.price||0),0);
   const pg = filt.slice(page*perPage,(page+1)*perPage);
   const tPg = Math.ceil(filt.length/perPage);
   useEffect(()=>setPage(0),[branch,search,statusF,selectedDate]);
@@ -660,25 +657,32 @@ function App() {
       {/* ═══ BOOKINGS ═══ */}
       {tab==="bookings"&&(<div style={{padding:"0 16px",animation:"fadeUp 0.3s ease"}}>
         <div style={{position:"relative",marginBottom:10}}><span style={{position:"absolute",right:12,top:"50%",transform:"translateY(-50%)",fontSize:14,color:"#555578"}}>🔍</span><input type="text" placeholder="بحث..." value={search} onChange={e=>setSearch(e.target.value)} style={{...inp,padding:"11px 36px 11px 11px",direction:"rtl",textAlign:"right"}}/></div>
+        <div style={{display:"flex",gap:8,marginBottom:10}}>
+          <input type="date" value={selectedDate} onChange={e=>setSelectedDate(e.target.value)} style={{...inp,marginBottom:0,padding:"10px 12px",direction:"rtl",textAlign:"right"}}/>
+          {selectedDate&&<button className="ch" onClick={()=>setSelectedDate("")} style={{padding:"10px 12px",borderRadius:10,border:"none",background:"#2a2a4a",color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif",whiteSpace:"nowrap"}}>مسح</button>}
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
+          <div style={{background:"#131328",borderRadius:12,padding:"12px",borderRight:"3px solid #60a5fa"}}>
+            <div style={{fontSize:10,color:"#8b8ba3",marginBottom:4}}>عدد الحجوزات</div>
+            <div style={{fontSize:22,fontWeight:800,color:"#fff"}}>{filt.length}</div>
+          </div>
+          <div style={{background:"#131328",borderRadius:12,padding:"12px",borderRight:"3px solid #34d399"}}>
+            <div style={{fontSize:10,color:"#8b8ba3",marginBottom:4}}>المؤكد</div>
+            <div style={{fontSize:22,fontWeight:800,color:"#34d399"}}>{filteredConfirmed.length}</div>
+          </div>
+          <div style={{background:"#131328",borderRadius:12,padding:"12px",borderRight:"3px solid #f87171"}}>
+            <div style={{fontSize:10,color:"#8b8ba3",marginBottom:4}}>الملغي</div>
+            <div style={{fontSize:22,fontWeight:800,color:"#f87171"}}>{filteredCancelled.length}</div>
+          </div>
+          <div style={{background:"#131328",borderRadius:12,padding:"12px",borderRight:"3px solid #c0a062"}}>
+            <div style={{fontSize:10,color:"#8b8ba3",marginBottom:4}}>إجمالي الإيراد</div>
+            <div style={{fontSize:22,fontWeight:800,color:"#c0a062"}}>{filteredRevenue}<span style={{fontSize:10}}> ر.س</span></div>
+          </div>
+        </div>
         <div style={{display:"flex",gap:5,marginBottom:6,overflowX:"auto",paddingBottom:3}}>
           {["الكل","الرياض","الدمام"].map(b=>(<button key={b} className="ch" onClick={()=>setBranch(b)} style={{padding:"6px 12px",borderRadius:18,border:"none",background:branch===b?"linear-gradient(135deg,#c0a062,#8b6914)":"#1a1a30",color:branch===b?"#fff":"#8b8ba3",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"'Tajawal',sans-serif",whiteSpace:"nowrap"}}>{b}</button>))}
           <div style={{width:1,background:"#2a2a4a",margin:"0 2px",flexShrink:0}}/>
           {["الكل","confirmed","pending","cancelled"].map(s=>(<button key={s} className="ch" onClick={()=>setStatusF(s)} style={{padding:"6px 10px",borderRadius:18,border:"none",background:statusF===s?"#2a2a4a":"#1a1a30",color:statusF===s?"#fff":"#8b8ba3",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"'Tajawal',sans-serif",whiteSpace:"nowrap"}}>{s==="الكل"?"الكل":STATUSES[s]}</button>))}
-        </div>
-        <div style={{display:"flex",gap:8,marginBottom:8,alignItems:"center"}}>
-          <input
-            type="date"
-            value={selectedDate}
-            onChange={e=>setSelectedDate(e.target.value)}
-            style={{...inp,marginBottom:0,padding:"9px 12px",flex:1,direction:"rtl",textAlign:"right"}}
-          />
-          <button
-            className="ch"
-            onClick={()=>setSelectedDate("")}
-            style={{padding:"9px 12px",borderRadius:10,border:"none",background:selectedDate?"#2a2a4a":"#1a1a30",color:"#fff",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif",whiteSpace:"nowrap"}}
-          >
-            مسح
-          </button>
         </div>
         <div style={{fontSize:11,color:"#555578",marginBottom:8}}>{filt.length} حجز</div>
         {pg.map((b,i)=>(<div key={b.id} className="ct" onClick={()=>setSel(b)} style={{background:"#131328",borderRadius:12,padding:"12px 14px",marginBottom:6,cursor:"pointer"}}><div style={{display:"flex",justifyContent:"space-between",marginBottom:6}}><div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}><span style={{fontSize:14,fontWeight:700,color:"#fff"}}>{b.customer_name}</span><Badge status={b.status} small/>{b.notified&&<span style={{fontSize:9,color:"#34d399"}}>✓</span>}{b.reminded&&<span style={{fontSize:9,color:"#818cf8"}}>⏰</span>}</div><span style={{fontSize:10,color:"#555578"}}>#{(b.id||"").toString().slice(-6)}</span></div><div style={{display:"flex",justifyContent:"space-between"}}><span style={{fontSize:11,color:"#8b8ba3"}}>✂️{b.service} · 📍{b.branch}</span><span style={{fontSize:13,fontWeight:800,color:"#c0a062"}}>{b.price}<span style={{fontSize:9}}> ر.س</span></span></div><div style={{fontSize:10,color:"#555578",marginTop:4}}>📅 {b.booking_date} · 🕐 {b.booking_time}</div></div>))}
