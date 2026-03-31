@@ -368,6 +368,44 @@ function App() {
   const today = new Date().toISOString().split("T")[0];
   const perPage = 10;
 
+  const parseBookingTime = (time) => {
+    if (!time) return { minutes: 0, hour24: 0, minute: 0 };
+
+    const raw = String(time).trim().toLowerCase();
+    const match = raw.match(/^(\d{1,2}):(\d{2})\s*(am|pm|ص|م)?$/i);
+
+    if (!match) return { minutes: 0, hour24: 0, minute: 0 };
+
+    let hour = parseInt(match[1], 10);
+    const minute = parseInt(match[2], 10);
+    const suffix = match[3];
+
+    if (suffix) {
+      const isPM = suffix === "pm" || suffix === "م";
+      const isAM = suffix === "am" || suffix === "ص";
+
+      if (isPM && hour < 12) hour += 12;
+      if (isAM && hour === 12) hour = 0;
+    }
+
+    return {
+      minutes: hour * 60 + minute,
+      hour24: hour,
+      minute
+    };
+  };
+
+  const formatTime = (time) => {
+    if (!time) return "--";
+
+    const { hour24, minute } = parseBookingTime(time);
+    const period = hour24 >= 12 ? "م" : "ص";
+    let displayHour = hour24 % 12;
+    if (displayHour === 0) displayHour = 12;
+
+    return `${displayHour}:${String(minute).padStart(2, "0")} ${period}`;
+  };
+
   // ═══ Connect Supabase ═══
   const loadCustomers = useCallback(async()=>{
     if(!supabaseClient) return;
@@ -482,13 +520,21 @@ function App() {
   const filteredConfirmed = filt.filter(b=>b.status==="confirmed");
   const filteredCancelled = filt.filter(b=>b.status==="cancelled");
   const filteredRevenue = filteredConfirmed.reduce((sum,b)=>sum+Number(b.price||0),0);
-  const sortedByTime = [...filt].sort((a,b)=>{
-    const ta = a.booking_time || "";
-    const tb = b.booking_time || "";
-    return ta.localeCompare(tb);
+
+  const summaryBookings = [...filt].sort((a,b)=>{
+    const aParsed = parseBookingTime(a.booking_time);
+    const bParsed = parseBookingTime(b.booking_time);
+    return aParsed.minutes - bParsed.minutes;
   });
-  const firstBookingTime = sortedByTime.length ? sortedByTime[0].booking_time : "--";
-  const lastBookingTime = sortedByTime.length ? sortedByTime[sortedByTime.length - 1].booking_time : "--";
+
+  const firstBookingTime = summaryBookings.length
+    ? formatTime(summaryBookings[0].booking_time)
+    : "--";
+
+  const lastBookingTime = summaryBookings.length
+    ? formatTime(summaryBookings[summaryBookings.length - 1].booking_time)
+    : "--";
+
   const serviceCounts = filt.reduce((acc,b)=>{
     const service = b.service || "غير محدد";
     acc[service] = (acc[service] || 0) + 1;
@@ -497,8 +543,22 @@ function App() {
   const topService = Object.keys(serviceCounts).length
     ? Object.entries(serviceCounts).sort((a,b)=>b[1]-a[1])[0][0]
     : "--";
-  const pg = filt.slice(page*perPage,(page+1)*perPage);
-  const tPg = Math.ceil(filt.length/perPage);
+
+  const sortedBookings = [...filt].sort((a,b)=>{
+    const aDateTime = new Date(`${a.booking_date || ""}T00:00:00`);
+    const bDateTime = new Date(`${b.booking_date || ""}T00:00:00`);
+
+    const aParsed = parseBookingTime(a.booking_time);
+    const bParsed = parseBookingTime(b.booking_time);
+
+    aDateTime.setHours(aParsed.hour24, aParsed.minute, 0, 0);
+    bDateTime.setHours(bParsed.hour24, bParsed.minute, 0, 0);
+
+    return aDateTime - bDateTime;
+  });
+
+  const pg = sortedBookings.slice(page*perPage,(page+1)*perPage);
+  const tPg = Math.ceil(sortedBookings.length/perPage);
   useEffect(()=>setPage(0),[branch,search,statusF,selectedDate]);
 
   const wk = Array.from({length:7},(_,i)=>{const d=new Date();d.setDate(d.getDate()-(6-i));const ds=d.toISOString().split("T")[0];return{day:["أحد","اثنين","ثلاثاء","أربعاء","خميس","جمعة","سبت"][d.getDay()],c:bookings.filter(b=>b.booking_date===ds&&b.status==="confirmed").length,t:ds===today};});
@@ -632,7 +692,7 @@ function App() {
       {tab==="home"&&!sub&&(<div style={{padding:"0 16px",animation:"fadeUp 0.3s ease"}}>
         {!dbConnected&&(<div onClick={()=>{setTab("settings");setShowDb(true);}} className="ct" style={{background:"#1a1a40",border:"1px solid #ff990033",borderRadius:12,padding:"12px 16px",marginBottom:10,cursor:"pointer",display:"flex",alignItems:"center",gap:10}}><span style={{fontSize:18}}>🔥</span><div><div style={{fontSize:13,fontWeight:700,color:"#22c55e"}}>ربط Supabase</div><div style={{fontSize:11,color:"#22c55e88"}}>اضغط للإعداد</div></div></div>)}
 
-        {autoRem&&waOk&&nextRem&&(<div style={{background:"linear-gradient(135deg,#1a1a40,#131328)",border:"1px solid #818cf833",borderRadius:12,padding:"10px 14px",marginBottom:10,display:"flex",alignItems:"center",justifyContent:"space-between"}}><div style={{display:"flex",alignItems:"center",gap:8}}><span style={{fontSize:18,animation:"pulse 2s infinite"}}>⏰</span><div><div style={{fontSize:12,fontWeight:700,color:"#818cf8"}}>التذكير القادم</div><div style={{fontSize:11,color:"#8b8ba3"}}>{nextRem.name} — {nextRem.time}</div></div></div><div style={{background:"#818cf822",padding:"4px 10px",borderRadius:8}}><span style={{fontSize:12,fontWeight:800,color:"#818cf8"}}>{nextRem.min} د</span></div></div>)}
+        {autoRem&&waOk&&nextRem&&(<div style={{background:"linear-gradient(135deg,#1a1a40,#131328)",border:"1px solid #818cf833",borderRadius:12,padding:"10px 14px",marginBottom:10,display:"flex",alignItems:"center",justifyContent:"space-between"}}><div style={{display:"flex",alignItems:"center",gap:8}}><span style={{fontSize:18,animation:"pulse 2s infinite"}}>⏰</span><div><div style={{fontSize:12,fontWeight:700,color:"#818cf8"}}>التذكير القادم</div><div style={{fontSize:11,color:"#8b8ba3"}}>{nextRem.name} — {formatTime(nextRem.time)}</div></div></div><div style={{background:"#818cf822",padding:"4px 10px",borderRadius:8}}><span style={{fontSize:12,fontWeight:800,color:"#818cf8"}}>{nextRem.min} د</span></div></div>)}
 
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:16}}>
           {[{i:"📅",l:"اليوم",v:todayBk.length,a:"#34d399"},{i:"💰",l:"الشهر",v:`${(mRev/1000).toFixed(1)}K`,a:"#c0a062"},{i:"⏳",l:"بانتظار",v:pCount,a:"#fbbf24"},{i:"👥",l:"عملاء",v:customers.length,a:"#818cf8"}].map((s,i)=>(<div key={i} style={{background:"#131328",borderRadius:14,padding:"14px 12px",borderRight:`3px solid ${s.a}`}}><div style={{fontSize:20,marginBottom:4}}>{s.i}</div><div style={{fontSize:10,color:"#8b8ba3"}}>{s.l}</div><div style={{fontSize:22,fontWeight:800,color:"#fff"}}>{s.v}</div></div>))}
@@ -651,7 +711,7 @@ function App() {
         {/* Today */}
         <div style={{display:"flex",justifyContent:"space-between",marginBottom:8}}><span style={{fontSize:13,fontWeight:700,color:"#fff"}}>📋 حجوزات اليوم</span><span onClick={()=>setTab("bookings")} style={{fontSize:11,color:"#c0a062",cursor:"pointer"}}>الكل ←</span></div>
         {todayBk.length===0?<div style={{background:"#131328",borderRadius:12,padding:20,textAlign:"center",color:"#555578",fontSize:12}}>لا يوجد حجوزات</div>
-        :todayBk.slice(0,4).map((b,i)=>(<div key={b.id} className="ct" onClick={()=>setSel(b)} style={{background:"#131328",borderRadius:12,padding:"12px 14px",marginBottom:6,cursor:"pointer"}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}><div><div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3}}><span style={{fontSize:13,fontWeight:700,color:"#fff"}}>{b.customer_name}</span><Badge status={b.status} small/>{b.reminded&&<span style={{fontSize:9,color:"#818cf8"}}>⏰</span>}</div><div style={{fontSize:11,color:"#666680"}}>{b.service} · {b.booking_time} · {b.branch}</div></div><span style={{fontSize:14,fontWeight:800,color:"#c0a062"}}>{b.price}<span style={{fontSize:9}}> ر.س</span></span></div></div>))}
+        :todayBk.slice(0,4).map((b,i)=>(<div key={b.id} className="ct" onClick={()=>setSel(b)} style={{background:"#131328",borderRadius:12,padding:"12px 14px",marginBottom:6,cursor:"pointer"}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}><div><div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3}}><span style={{fontSize:13,fontWeight:700,color:"#fff"}}>{b.customer_name}</span><Badge status={b.status} small/>{b.reminded&&<span style={{fontSize:9,color:"#818cf8"}}>⏰</span>}</div><div style={{fontSize:11,color:"#666680"}}>{b.service} · {formatTime(b.booking_time)} · {b.branch}</div></div><span style={{fontSize:14,fontWeight:800,color:"#c0a062"}}>{b.price}<span style={{fontSize:9}}> ر.س</span></span></div></div>))}
       </div>)}
 
       {/* ═══ BULK ═══ */}
@@ -717,7 +777,7 @@ function App() {
           {["الكل","confirmed","pending","cancelled"].map(s=>(<button key={s} className="ch" onClick={()=>setStatusF(s)} style={{padding:"6px 10px",borderRadius:18,border:"none",background:statusF===s?"#2a2a4a":"#1a1a30",color:statusF===s?"#fff":"#8b8ba3",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"'Tajawal',sans-serif",whiteSpace:"nowrap"}}>{s==="الكل"?"الكل":STATUSES[s]}</button>))}
         </div>
         <div style={{fontSize:11,color:"#555578",marginBottom:8}}>{filt.length} حجز</div>
-        {pg.map((b,i)=>(<div key={b.id} className="ct" onClick={()=>setSel(b)} style={{background:"#131328",borderRadius:12,padding:"12px 14px",marginBottom:6,cursor:"pointer"}}><div style={{display:"flex",justifyContent:"space-between",marginBottom:6}}><div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}><span style={{fontSize:14,fontWeight:700,color:"#fff"}}>{b.customer_name}</span><Badge status={b.status} small/>{b.notified&&<span style={{fontSize:9,color:"#34d399"}}>✓</span>}{b.reminded&&<span style={{fontSize:9,color:"#818cf8"}}>⏰</span>}</div><span style={{fontSize:10,color:"#555578"}}>#{(b.id||"").toString().slice(-6)}</span></div><div style={{display:"flex",justifyContent:"space-between"}}><span style={{fontSize:11,color:"#8b8ba3"}}>✂️{b.service} · 📍{b.branch}</span><span style={{fontSize:13,fontWeight:800,color:"#c0a062"}}>{b.price}<span style={{fontSize:9}}> ر.س</span></span></div><div style={{fontSize:10,color:"#555578",marginTop:4}}>📅 {b.booking_date} · 🕐 {b.booking_time}</div></div>))}
+        {pg.map((b,i)=>(<div key={b.id} className="ct" onClick={()=>setSel(b)} style={{background:"#131328",borderRadius:12,padding:"12px 14px",marginBottom:6,cursor:"pointer"}}><div style={{display:"flex",justifyContent:"space-between",marginBottom:6}}><div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}><span style={{fontSize:14,fontWeight:700,color:"#fff"}}>{b.customer_name}</span><Badge status={b.status} small/>{b.notified&&<span style={{fontSize:9,color:"#34d399"}}>✓</span>}{b.reminded&&<span style={{fontSize:9,color:"#818cf8"}}>⏰</span>}</div><span style={{fontSize:10,color:"#555578"}}>#{(b.id||"").toString().slice(-6)}</span></div><div style={{display:"flex",justifyContent:"space-between"}}><span style={{fontSize:11,color:"#8b8ba3"}}>✂️{b.service} · 📍{b.branch}</span><span style={{fontSize:13,fontWeight:800,color:"#c0a062"}}>{b.price}<span style={{fontSize:9}}> ر.س</span></span></div><div style={{fontSize:10,color:"#555578",marginTop:4}}>📅 {b.booking_date} · 🕐 {formatTime(b.booking_time)}</div></div>))}
         {tPg>1&&<div style={{display:"flex",justifyContent:"center",gap:12,padding:"12px 0"}}><button disabled={page===0} onClick={()=>setPage(p=>p-1)} style={{padding:"8px 16px",borderRadius:8,border:"none",background:page===0?"#131328":"#2a2a4a",color:page===0?"#333":"#fff",fontSize:12,fontWeight:600,cursor:page===0?"default":"pointer",fontFamily:"'Tajawal',sans-serif"}}>←</button><span style={{fontSize:12,color:"#8b8ba3",alignSelf:"center"}}>{page+1}/{tPg}</span><button disabled={page>=tPg-1} onClick={()=>setPage(p=>p+1)} style={{padding:"8px 16px",borderRadius:8,border:"none",background:page>=tPg-1?"#131328":"#2a2a4a",color:page>=tPg-1?"#333":"#fff",fontSize:12,fontWeight:600,cursor:page>=tPg-1?"default":"pointer",fontFamily:"'Tajawal',sans-serif"}}>→</button></div>}
       </div>)}
 
@@ -980,7 +1040,7 @@ function App() {
         <div onClick={e=>e.stopPropagation()} style={{background:"#131328",borderRadius:"20px 20px 0 0",padding:"8px 20px 28px",width:"100%",maxWidth:480,maxHeight:"85vh",overflowY:"auto",animation:"fadeUp 0.3s ease"}}>
           <div style={{display:"flex",justifyContent:"center",padding:"6px 0 12px"}}><div style={{width:32,height:4,borderRadius:2,background:"#2a2a4a"}}/></div>
           <div style={{display:"flex",justifyContent:"space-between",marginBottom:14}}><h3 style={{fontSize:17,fontWeight:800,color:"#fff",margin:0}}>حجز #{(sel.id||"").toString().slice(-6)}</h3><Badge status={sel.status}/></div>
-          {[["👤",sel.customer_name],["📱",sel.customer_phone],["🏢",sel.branch],["✂️",sel.service],["💰",`${sel.price} ر.س`],["📅",sel.booking_date],["🕐",sel.booking_time],["💳",sel.payment_method]].map(([i,v],j)=>(<div key={j} style={{display:"flex",justifyContent:"space-between",padding:"9px 0",borderBottom:j<7?"1px solid #1a1a30":"none"}}><span style={{fontSize:12,color:"#8b8ba3"}}>{i}</span><span style={{fontSize:13,fontWeight:600,color:"#e0e0f0"}}>{v}</span></div>))}
+          {[["👤",sel.customer_name],["📱",sel.customer_phone],["🏢",sel.branch],["✂️",sel.service],["💰",`${sel.price} ر.س`],["📅",sel.booking_date],["🕐",formatTime(sel.booking_time)],["💳",sel.payment_method]].map(([i,v],j)=>(<div key={j} style={{display:"flex",justifyContent:"space-between",padding:"9px 0",borderBottom:j<7?"1px solid #1a1a30":"none"}}><span style={{fontSize:12,color:"#8b8ba3"}}>{i}</span><span style={{fontSize:13,fontWeight:600,color:"#e0e0f0"}}>{v}</span></div>))}
           <div style={{display:"flex",gap:6,marginTop:12}}>
             {sel.status!=="confirmed"&&<button className="bt" onClick={()=>updSt(sel,"confirmed")} style={{flex:1,padding:9,borderRadius:9,border:"none",background:"#0d3320",color:"#34d399",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif"}}>✅ تأكيد</button>}
             {sel.status!=="cancelled"&&<button className="bt" onClick={()=>updSt(sel,"cancelled")} style={{flex:1,padding:9,borderRadius:9,border:"none",background:"#3b1118",color:"#f87171",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"'Tajawal',sans-serif"}}>❌ إلغاء</button>}
