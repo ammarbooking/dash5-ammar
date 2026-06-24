@@ -22,7 +22,7 @@
 </head>
 <body>
 <div id="root"></div>
-<script type="text/babel">
+<script id="app-jsx" type="text/plain">
 const { useState, useEffect, useCallback, useRef } = React;
 
 // ═══════════════════════════════════════════
@@ -1090,6 +1090,22 @@ function App() {
 }
 
 ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(App));
+</script>
+<script>
+(function () {
+  try {
+    var code = document.getElementById('app-jsx').textContent;
+    var result = Babel.transform(code, {
+      filename: 'ebdaa-ammar-panel.jsx',
+      sourceType: 'script',
+      presets: [[Babel.availablePresets.react, { runtime: 'classic' }]]
+    });
+    (0, eval)(result.code);
+  } catch (e) {
+    console.error('PANEL_START_ERROR:', e);
+    document.getElementById('root').innerHTML = '<div style="direction:rtl;color:#fff;background:#131328;margin:20px;padding:16px;border-radius:12px;font-family:Tajawal,Arial">حدث خطأ في تشغيل البانل. افتح Console وأرسل الخطأ الأحمر.</div>';
+  }
+})();
 </script>
 </body>
 </html>
