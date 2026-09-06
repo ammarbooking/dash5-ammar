@@ -507,8 +507,17 @@ function App() {
   });
   const customers = Object.values(custMap).map(c=>({...c,points:calcPts(c.cBks),tier:getTier(calcPts(c.cBks))})).sort((a,b)=>b.points-a.points);
 
+  // توحيد اسم الفرع: يدعم الحجوزات القادمة من صفحة الحجز بالقيم
+  // riyadh / dammam وكذلك الرياض / الدمام
+  const normalizeBranch = (value) => {
+    const v = String(value || "").trim().toLowerCase();
+    if (v === "riyadh" || v === "الرياض") return "الرياض";
+    if (v === "dammam" || v === "الدمام") return "الدمام";
+    return String(value || "").trim();
+  };
+
   const filt = bookings.filter(b=>{
-    if(branch!=="الكل"&&b.branch!==branch)return false;
+    if(branch!=="الكل" && normalizeBranch(b.branch)!==branch)return false;
     if(statusF!=="الكل"&&b.status!==statusF)return false;
     if(selectedDate){
       const bookingDate = new Date(b.booking_date).toISOString().split("T")[0];
@@ -711,7 +720,7 @@ function App() {
         {/* Today */}
         <div style={{display:"flex",justifyContent:"space-between",marginBottom:8}}><span style={{fontSize:13,fontWeight:700,color:"#fff"}}>📋 حجوزات اليوم</span><span onClick={()=>setTab("bookings")} style={{fontSize:11,color:"#c0a062",cursor:"pointer"}}>الكل ←</span></div>
         {todayBk.length===0?<div style={{background:"#131328",borderRadius:12,padding:20,textAlign:"center",color:"#555578",fontSize:12}}>لا يوجد حجوزات</div>
-        :todayBk.slice(0,4).map((b,i)=>(<div key={b.id} className="ct" onClick={()=>setSel(b)} style={{background:"#131328",borderRadius:12,padding:"12px 14px",marginBottom:6,cursor:"pointer"}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}><div><div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3}}><span style={{fontSize:13,fontWeight:700,color:"#fff"}}>{b.customer_name}</span><Badge status={b.status} small/>{b.reminded&&<span style={{fontSize:9,color:"#818cf8"}}>⏰</span>}</div><div style={{fontSize:11,color:"#666680"}}>{b.service} · {formatTime(b.booking_time)} · {b.branch}</div></div><span style={{fontSize:14,fontWeight:800,color:"#c0a062"}}>{b.price}<span style={{fontSize:9}}> ر.س</span></span></div></div>))}
+        :todayBk.slice(0,4).map((b,i)=>(<div key={b.id} className="ct" onClick={()=>setSel(b)} style={{background:"#131328",borderRadius:12,padding:"12px 14px",marginBottom:6,cursor:"pointer"}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}><div><div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3}}><span style={{fontSize:13,fontWeight:700,color:"#fff"}}>{b.customer_name}</span><Badge status={b.status} small/>{b.reminded&&<span style={{fontSize:9,color:"#818cf8"}}>⏰</span>}</div><div style={{fontSize:11,color:"#666680"}}>{b.service} · {formatTime(b.booking_time)} · {normalizeBranch(b.branch)}</div></div><span style={{fontSize:14,fontWeight:800,color:"#c0a062"}}>{b.price}<span style={{fontSize:9}}> ر.س</span></span></div></div>))}
       </div>)}
 
       {/* ═══ BULK ═══ */}
@@ -777,7 +786,7 @@ function App() {
           {["الكل","confirmed","pending","cancelled"].map(s=>(<button key={s} className="ch" onClick={()=>setStatusF(s)} style={{padding:"6px 10px",borderRadius:18,border:"none",background:statusF===s?"#2a2a4a":"#1a1a30",color:statusF===s?"#fff":"#8b8ba3",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"'Tajawal',sans-serif",whiteSpace:"nowrap"}}>{s==="الكل"?"الكل":STATUSES[s]}</button>))}
         </div>
         <div style={{fontSize:11,color:"#555578",marginBottom:8}}>{filt.length} حجز</div>
-        {pg.map((b,i)=>(<div key={b.id} className="ct" onClick={()=>setSel(b)} style={{background:"#131328",borderRadius:12,padding:"12px 14px",marginBottom:6,cursor:"pointer"}}><div style={{display:"flex",justifyContent:"space-between",marginBottom:6}}><div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}><span style={{fontSize:14,fontWeight:700,color:"#fff"}}>{b.customer_name}</span><Badge status={b.status} small/>{b.notified&&<span style={{fontSize:9,color:"#34d399"}}>✓</span>}{b.reminded&&<span style={{fontSize:9,color:"#818cf8"}}>⏰</span>}</div><span style={{fontSize:10,color:"#555578"}}>#{(b.id||"").toString().slice(-6)}</span></div><div style={{display:"flex",justifyContent:"space-between"}}><span style={{fontSize:11,color:"#8b8ba3"}}>✂️{b.service} · 📍{b.branch}</span><span style={{fontSize:13,fontWeight:800,color:"#c0a062"}}>{b.price}<span style={{fontSize:9}}> ر.س</span></span></div><div style={{fontSize:10,color:"#555578",marginTop:4}}>📅 {b.booking_date} · 🕐 {formatTime(b.booking_time)}</div></div>))}
+        {pg.map((b,i)=>(<div key={b.id} className="ct" onClick={()=>setSel(b)} style={{background:"#131328",borderRadius:12,padding:"12px 14px",marginBottom:6,cursor:"pointer"}}><div style={{display:"flex",justifyContent:"space-between",marginBottom:6}}><div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}><span style={{fontSize:14,fontWeight:700,color:"#fff"}}>{b.customer_name}</span><Badge status={b.status} small/>{b.notified&&<span style={{fontSize:9,color:"#34d399"}}>✓</span>}{b.reminded&&<span style={{fontSize:9,color:"#818cf8"}}>⏰</span>}</div><span style={{fontSize:10,color:"#555578"}}>#{(b.id||"").toString().slice(-6)}</span></div><div style={{display:"flex",justifyContent:"space-between"}}><span style={{fontSize:11,color:"#8b8ba3"}}>✂️{b.service} · 📍{normalizeBranch(b.branch)}</span><span style={{fontSize:13,fontWeight:800,color:"#c0a062"}}>{b.price}<span style={{fontSize:9}}> ر.س</span></span></div><div style={{fontSize:10,color:"#555578",marginTop:4}}>📅 {b.booking_date} · 🕐 {formatTime(b.booking_time)}</div></div>))}
         {tPg>1&&<div style={{display:"flex",justifyContent:"center",gap:12,padding:"12px 0"}}><button disabled={page===0} onClick={()=>setPage(p=>p-1)} style={{padding:"8px 16px",borderRadius:8,border:"none",background:page===0?"#131328":"#2a2a4a",color:page===0?"#333":"#fff",fontSize:12,fontWeight:600,cursor:page===0?"default":"pointer",fontFamily:"'Tajawal',sans-serif"}}>←</button><span style={{fontSize:12,color:"#8b8ba3",alignSelf:"center"}}>{page+1}/{tPg}</span><button disabled={page>=tPg-1} onClick={()=>setPage(p=>p+1)} style={{padding:"8px 16px",borderRadius:8,border:"none",background:page>=tPg-1?"#131328":"#2a2a4a",color:page>=tPg-1?"#333":"#fff",fontSize:12,fontWeight:600,cursor:page>=tPg-1?"default":"pointer",fontFamily:"'Tajawal',sans-serif"}}>→</button></div>}
       </div>)}
 
